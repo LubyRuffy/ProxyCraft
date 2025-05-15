@@ -9,16 +9,17 @@ import (
 // Config holds all configurable options for ProxyCraft.
 // These will be populated from command-line arguments.
 type Config struct {
-	ListenHost    string
-	ListenPort    int
-	Verbose       bool
-	OutputFile    string
-	Filter        string
-	ExportCAPath  string
-	UseCACertPath string
-	UseCAKeyPath  string
-	ShowHelp      bool
-	EnableMITM    bool // Enable MITM mode for HTTPS traffic inspection
+	ListenHost       string
+	ListenPort       int
+	Verbose          bool
+	OutputFile       string
+	AutoSaveInterval int
+	Filter           string
+	ExportCAPath     string
+	UseCACertPath    string
+	UseCAKeyPath     string
+	ShowHelp         bool
+	EnableMITM       bool // Enable MITM mode for HTTPS traffic inspection
 }
 
 // ParseFlags parses the command-line arguments and returns a Config struct.
@@ -33,6 +34,7 @@ func ParseFlags() *Config {
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose output")
 	flag.StringVar(&cfg.OutputFile, "o", "", "Save traffic to FILE (HAR format recommended)")
 	flag.StringVar(&cfg.OutputFile, "output-file", "", "Save traffic to FILE (HAR format recommended)")
+	flag.IntVar(&cfg.AutoSaveInterval, "auto-save", 10, "Auto-save HAR file every N seconds (0 to disable)")
 	flag.StringVar(&cfg.Filter, "filter", "", "Filter displayed traffic (e.g., \"host=example.com\")")
 	flag.StringVar(&cfg.ExportCAPath, "export-ca", "", "Export the root CA certificate to FILEPATH and exit")
 	flag.StringVar(&cfg.UseCACertPath, "use-ca", "", "Use custom root CA certificate from CERT_PATH")

@@ -2,6 +2,7 @@ package harlogger
 
 import (
 	"bytes"           // Added for bytes.NewBuffer
+	"context"         // Added for context in auto-save
 	"encoding/base64" // Added for base64 encoding binary bodies
 	"encoding/json"
 	"fmt"
@@ -26,18 +27,23 @@ const (
 // Logger is responsible for creating and writing HAR logs.
 // It is designed to be thread-safe.
 type Logger struct {
-	mu         sync.Mutex
-	h          *HAR
-	outputFile string
-	enabled    bool
+	mu               sync.Mutex
+	h                *HAR
+	outputFile       string
+	enabled          bool
+	autoSaveEnabled  bool
+	autoSaveInterval time.Duration
+	cancelAutoSave   context.CancelFunc
 }
 
 // NewLogger creates a new HAR logger.
 // If outputFile is empty, logging will be disabled.
 func NewLogger(outputFile string, proxyName string, proxyVersion string) *Logger {
 	l := &Logger{
-		outputFile: outputFile,
-		enabled:    outputFile != "",
+		outputFile:       outputFile,
+		enabled:          outputFile != "",
+		autoSaveEnabled:  false,
+		autoSaveInterval: 30 * time.Second, // Default to 30 seconds
 	}
 	if l.enabled {
 		l.h = &HAR{
@@ -351,6 +357,72 @@ func (l *Logger) Save() error {
 
 	log.Printf("HAR log successfully saved to %s with %d entries.", l.outputFile, len(l.h.Log.Entries))
 	return nil // Both succeeded
+}
+
+// EnableAutoSave starts a background goroutine that automatically saves the HAR log
+// at regular intervals specified by interval.
+func (l *Logger) EnableAutoSave(interval time.Duration) {
+	if !l.IsEnabled() {
+		log.Println("HAR logging disabled, not enabling auto-save.")
+		return
+	}
+
+	// If auto-save is already enabled, cancel it first
+	if l.autoSaveEnabled && l.cancelAutoSave != nil {
+		l.cancelAutoSave()
+	}
+
+	// Create a new context with cancel function
+	ctx, cancel := context.WithCancel(context.Background())
+	l.cancelAutoSave = cancel
+
+	// Update auto-save settings
+	l.mu.Lock()
+	l.autoSaveEnabled = true
+	if interval > 0 {
+		l.autoSaveInterval = interval
+	}
+	l.mu.Unlock()
+
+	log.Printf("Auto-save enabled, HAR log will be saved every %v", l.autoSaveInterval)
+
+	// Start background goroutine for auto-saving
+	go func() {
+		ticker := time.NewTicker(l.autoSaveInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Println("Auto-save stopped")
+				return
+			case <-ticker.C:
+				// Check if there are any entries to save
+				l.mu.Lock()
+				hasEntries := l.h != nil && len(l.h.Log.Entries) > 0
+				l.mu.Unlock()
+
+				if hasEntries {
+					if err := l.Save(); err != nil {
+						log.Printf("Error during auto-save: %v", err)
+					}
+				}
+			}
+		}
+	}()
+}
+
+// DisableAutoSave stops the automatic saving of the HAR log.
+func (l *Logger) DisableAutoSave() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.autoSaveEnabled && l.cancelAutoSave != nil {
+		l.cancelAutoSave()
+		l.autoSaveEnabled = false
+		l.cancelAutoSave = nil
+		log.Println("Auto-save disabled")
+	}
 }
 
 // Helper to read body and restore it for http.Request or http.Response

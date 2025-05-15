@@ -3,6 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/LubyRuffy/ProxyCraft/certs"
 	"github.com/LubyRuffy/ProxyCraft/cli"
@@ -56,9 +60,22 @@ func main() {
 	harLogger := harlogger.NewLogger(cfg.OutputFile, appName, appVersion)
 	if harLogger.IsEnabled() {
 		log.Printf("HAR logging enabled, will save to: %s", cfg.OutputFile)
+
+		// Enable auto-save if interval > 0
+		if cfg.AutoSaveInterval > 0 {
+			log.Printf("Auto-save enabled, HAR log will be saved every %d seconds", cfg.AutoSaveInterval)
+			harLogger.EnableAutoSave(time.Duration(cfg.AutoSaveInterval) * time.Second)
+		} else {
+			log.Printf("Auto-save disabled, HAR log will only be saved on exit")
+		}
+
+		// Also save on exit
 		defer func() {
+			if cfg.AutoSaveInterval > 0 {
+				harLogger.DisableAutoSave() // Stop auto-save before final save
+			}
 			if err := harLogger.Save(); err != nil {
-				log.Printf("Error saving HAR log: %v", err)
+				log.Printf("Error saving HAR log on exit: %v", err)
 			}
 		}()
 	}
@@ -78,8 +95,20 @@ func main() {
 		log.Printf("To enable MITM mode, use the -mitm flag")
 	}
 
-	log.Printf("Starting proxy server on %s", listenAddr)
-	if err := proxyServer.Start(); err != nil {
-		log.Fatalf("Failed to start proxy server: %v", err)
-	}
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start the proxy server in a goroutine
+	go func() {
+		log.Printf("Starting proxy server on %s", listenAddr)
+		if err := proxyServer.Start(); err != nil {
+			log.Fatalf("Failed to start proxy server: %v", err)
+		}
+	}()
+
+	// Wait for termination signal
+	sig := <-sigChan
+	log.Printf("Received signal %v, shutting down...", sig)
+	// The deferred harLogger.Save() will be called when main() exits
 }
