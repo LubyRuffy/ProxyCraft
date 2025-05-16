@@ -97,8 +97,14 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Send the request to the target server
 	startTime := time.Now()
 
-	// Create a transport with HTTP/2 support
-	transport := &http.Transport{
+	// Check if this might be an SSE request based on patterns and headers
+	potentialSSE := isSSERequest(proxyReq)
+	if s.Verbose && potentialSSE {
+		log.Printf("[HTTP] Potential SSE request detected based on URL path or Accept header")
+	}
+
+	// Create a custom RoundTripper that can intercept SSE responses early
+	baseTransport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -107,11 +113,100 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		// Don't automatically decompress responses to allow proper SSE handling
+		DisableCompression: true,
+		// Override the RoundTrip method to intercept responses early
+		ResponseHeaderTimeout: 5 * time.Second, // Timeout for receiving response headers
 	}
 
 	// Configure HTTP/2 support
-	s.handleHTTP2(transport)
+	s.handleHTTP2(baseTransport)
 
+	// Create a custom transport that can detect SSE responses early
+	transport := &earlySSEDetector{
+		base:           baseTransport,
+		responseWriter: w,
+		server:         s,
+		verbose:        s.Verbose,
+	}
+
+	// Special handling for potential SSE requests
+	if potentialSSE {
+		if s.Verbose {
+			log.Printf("[HTTP] Using special SSE handling for %s", targetURL)
+		}
+
+		// Use a custom client with no timeout for SSE
+		client := &http.Client{
+			Transport: transport,
+			// No timeout for SSE requests
+		}
+
+		// Set special headers for SSE
+		proxyReq.Header.Set("Accept", "text/event-stream")
+		proxyReq.Header.Set("Cache-Control", "no-cache")
+		proxyReq.Header.Set("Connection", "keep-alive")
+
+		// Send the request
+		resp, err := client.Do(proxyReq)
+		timeTaken := time.Since(startTime)
+
+		if err != nil {
+			log.Printf("[HTTP] Error sending request to target server %s: %v", targetURL, err)
+			http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL, err), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		// Log to HAR
+		if s.HarLogger.IsEnabled() {
+			serverIP := ""
+			if proxyReq != nil && proxyReq.URL != nil {
+				serverIP = proxyReq.URL.Host
+			}
+			s.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
+		}
+
+		// Check if this is actually an SSE response
+		if isServerSentEvent(resp) {
+			if s.Verbose {
+				log.Printf("[HTTP] Confirmed SSE response from %s", targetURL)
+			}
+
+			// Handle SSE response
+			err := s.handleSSE(w, resp)
+			if err != nil {
+				log.Printf("[SSE] Error handling SSE response: %v", err)
+			}
+			return
+		} else {
+			// Not an SSE response, handle normally
+			if s.Verbose {
+				log.Printf("[HTTP] Expected SSE but got %s from %s", resp.Header.Get("Content-Type"), targetURL)
+			}
+
+			// Copy headers from target server's response to our response writer
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+
+			// Set the status code
+			w.WriteHeader(resp.StatusCode)
+
+			// Copy the body from target server's response to our response writer
+			written, err := io.Copy(w, resp.Body)
+			if err != nil {
+				log.Printf("Error copying response body: %v", err)
+			}
+
+			log.Printf("Copied %d bytes for response body from %s", written, targetURL)
+			return
+		}
+	}
+
+	// For non-SSE requests, use normal handling
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   30 * time.Second,
@@ -135,13 +230,23 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Log to HAR
+	// Log to HAR - 但对于SSE响应，我们需要特殊处理
 	if s.HarLogger.IsEnabled() {
 		serverIP := ""
 		if proxyReq != nil && proxyReq.URL != nil {
 			serverIP = proxyReq.URL.Host
 		}
-		s.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
+
+		// 检查是否是SSE响应
+		if isServerSentEvent(resp) {
+			// 对于SSE响应，创建一个没有响应体的副本，以避免读取整个响应体
+			respCopy := *resp
+			respCopy.Body = nil
+			s.HarLogger.AddEntry(r, &respCopy, startTime, timeTaken, serverIP, r.RemoteAddr)
+		} else {
+			// 对于非SSE响应，正常记录
+			s.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
+		}
 	}
 
 	if s.Verbose {
@@ -401,6 +506,13 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 
 		// Send the outgoing request
 		startTime := time.Now()
+
+		// Check if this might be an SSE request based on patterns and headers
+		potentialSSE := isSSERequest(outReq)
+		if s.Verbose && potentialSSE {
+			log.Printf("[MITM for %s] Potential SSE request detected based on URL path or Accept header", r.Host)
+		}
+
 		// Create a custom transport that skips certificate verification
 		// This is necessary for MITM mode to work with HTTPS sites
 		// Extract hostname without port for SNI
@@ -422,13 +534,163 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
+			// Don't automatically decompress responses to allow proper SSE handling
+			DisableCompression: true,
 		}
 
 		// Configure HTTP/2 support for the transport
 		s.handleHTTP2(transport)
 
+		// Create a custom transport that can detect SSE responses early
+		sseTransport := &earlySSEDetector{
+			base:           transport,
+			responseWriter: tlsClientConn,
+			server:         s,
+			verbose:        s.Verbose,
+		}
+
+		// Special handling for potential SSE requests
+		if potentialSSE {
+			if s.Verbose {
+				log.Printf("[MITM for %s] Using special SSE handling", r.Host)
+			}
+
+			// Use a custom client with no timeout for SSE
+			httpClient := &http.Client{
+				Transport: sseTransport,
+				// No timeout for SSE requests
+			}
+
+			// Set special headers for SSE
+			outReq.Header.Set("Accept", "text/event-stream")
+			outReq.Header.Set("Cache-Control", "no-cache")
+			outReq.Header.Set("Connection", "keep-alive")
+
+			// Send the request
+			resp, err := httpClient.Do(outReq)
+			timeTaken := time.Since(startTime)
+
+			if err != nil {
+				log.Printf("[MITM for %s] Error sending request to target %s: %v", r.Host, targetURL.String(), err)
+				// Log to HAR even if there's an error
+				if s.HarLogger.IsEnabled() {
+					connectionID := ""
+					if tlsClientConn != nil {
+						connectionID = tlsClientConn.RemoteAddr().String()
+					}
+					s.HarLogger.AddEntry(tunneledReq, nil, startTime, timeTaken, r.Host, connectionID)
+				}
+				break
+			}
+			defer resp.Body.Close()
+
+			// Log to HAR
+			if s.HarLogger.IsEnabled() {
+				connectionID := ""
+				if tlsClientConn != nil {
+					connectionID = tlsClientConn.RemoteAddr().String()
+				}
+				s.HarLogger.AddEntry(tunneledReq, resp, startTime, timeTaken, r.Host, connectionID)
+			}
+
+			// Check if this is actually an SSE response
+			if isServerSentEvent(resp) {
+				if s.Verbose {
+					log.Printf("[MITM for %s] Confirmed SSE response", r.Host)
+				}
+
+				// For SSE in MITM mode, we need to handle it differently
+				// First, write the response headers
+				writer := bufio.NewWriter(tlsClientConn)
+
+				// Write the status line
+				statusLine := fmt.Sprintf("HTTP/%d.%d %d %s\r\n",
+					resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, resp.Status)
+				writer.WriteString(statusLine)
+
+				// Write headers
+				for k, vv := range resp.Header {
+					for _, v := range vv {
+						writer.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+					}
+				}
+
+				// End of headers
+				writer.WriteString("\r\n")
+				writer.Flush()
+
+				// Now read and forward SSE events
+				reader := bufio.NewReader(resp.Body)
+				for {
+					line, err := reader.ReadBytes('\n')
+					if err != nil {
+						if err == io.EOF {
+							break
+						}
+						log.Printf("[MITM for %s] Error reading SSE stream: %v", r.Host, err)
+						break
+					}
+
+					// Write the event data to the client
+					_, err = writer.Write(line)
+					if err != nil {
+						log.Printf("[MITM for %s] Error writing SSE data to client: %v", r.Host, err)
+						break
+					}
+
+					// Log the event if verbose
+					if s.Verbose && len(line) > 1 { // Skip empty lines
+						lineStr := strings.TrimSpace(string(line))
+						if strings.HasPrefix(lineStr, "data:") {
+							log.Printf("[SSE] Event data: %s", lineStr)
+						} else if strings.HasPrefix(lineStr, "event:") {
+							log.Printf("[SSE] Event type: %s", lineStr)
+						} else if strings.HasPrefix(lineStr, "id:") {
+							log.Printf("[SSE] Event ID: %s", lineStr)
+						} else if strings.HasPrefix(lineStr, "retry:") {
+							log.Printf("[SSE] Event retry: %s", lineStr)
+						} else if lineStr != "" {
+							log.Printf("[SSE] Event line: %s", lineStr)
+						}
+					}
+
+					// Flush the data to the client immediately
+					writer.Flush()
+				}
+
+				resp.Body.Close()
+				// After SSE stream ends, we need to break the loop to close the connection
+				break
+			} else {
+				// Not an SSE response, handle normally
+				if s.Verbose {
+					log.Printf("[MITM for %s] Expected SSE but got %s", r.Host, resp.Header.Get("Content-Type"))
+				}
+
+				// For non-SSE responses, proceed with normal handling
+				// Write the response back to the client over the TLS tunnel
+				err = resp.Write(tlsClientConn)
+				if err != nil {
+					log.Printf("[MITM for %s] Error writing response to client: %v", r.Host, err)
+					resp.Body.Close()
+					break
+				}
+				resp.Body.Close()
+
+				// Handle connection persistence
+				if tunneledReq.Close || resp.Close || tunneledReq.Header.Get("Connection") == "close" || resp.Header.Get("Connection") == "close" {
+					if s.Verbose {
+						log.Printf("[MITM for %s] Connection close signaled in headers or by request/response close flag.", r.Host)
+					}
+					break
+				}
+				continue
+			}
+		}
+
+		// For non-SSE requests, use normal handling
 		httpClient := &http.Client{
-			Transport: transport,
+			Transport: sseTransport,
 			Timeout:   30 * time.Second,
 		}
 		resp, err := httpClient.Do(outReq)
@@ -447,13 +709,23 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		// Log to HAR
+		// Log to HAR - 但对于SSE响应，我们需要特殊处理
 		if s.HarLogger.IsEnabled() {
 			connectionID := ""
 			if tlsClientConn != nil {
 				connectionID = tlsClientConn.RemoteAddr().String()
 			}
-			s.HarLogger.AddEntry(tunneledReq, resp, startTime, timeTaken, r.Host, connectionID)
+
+			// 检查是否是SSE响应
+			if isServerSentEvent(resp) {
+				// 对于SSE响应，创建一个没有响应体的副本，以避免读取整个响应体
+				respCopy := *resp
+				respCopy.Body = nil
+				s.HarLogger.AddEntry(tunneledReq, &respCopy, startTime, timeTaken, r.Host, connectionID)
+			} else {
+				// 对于非SSE响应，正常记录
+				s.HarLogger.AddEntry(tunneledReq, resp, startTime, timeTaken, r.Host, connectionID)
+			}
 		}
 
 		if s.Verbose {
@@ -583,8 +855,73 @@ func (s *Server) handleHTTP2(transport *http.Transport) {
 
 // isServerSentEvent checks if the response is a Server-Sent Event stream
 func isServerSentEvent(resp *http.Response) bool {
+	// Check Content-Type header for SSE
 	contentType := resp.Header.Get("Content-Type")
 	return strings.Contains(contentType, "text/event-stream")
+}
+
+// headerInterceptingTransport 是一个自定义的 http.RoundTripper，它可以在接收到响应头后立即拦截响应
+type headerInterceptingTransport struct {
+	base     http.RoundTripper
+	verbose  bool
+	callback func(*http.Response) (*http.Response, error)
+}
+
+// RoundTrip 实现 http.RoundTripper 接口
+func (t *headerInterceptingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// 使用基础 Transport 执行请求
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// 在收到响应头后立即调用回调函数
+	if t.callback != nil {
+		return t.callback(resp)
+	}
+
+	// 如果没有回调函数，返回原始响应
+	return resp, nil
+}
+
+// isSSERequest checks if the request might be for a Server-Sent Event stream
+func isSSERequest(req *http.Request) bool {
+	// Check Accept header for SSE
+	acceptHeader := req.Header.Get("Accept")
+
+	// Check if the URL path contains common SSE endpoints
+	path := strings.ToLower(req.URL.Path)
+
+	// Common SSE endpoint patterns
+	ssePatterns := []string{
+		"/events",
+		"/stream",
+		"/sse",
+		"/notifications",
+		"/messages",
+		"/updates",
+		"/push",
+		"/chat",
+		"/completions",         // OpenAI API
+		"/v1/chat/completions", // OpenAI API
+	}
+
+	// Check if the path contains any of the SSE patterns
+	for _, pattern := range ssePatterns {
+		if strings.Contains(path, pattern) {
+			return true
+		}
+	}
+
+	return strings.Contains(acceptHeader, "text/event-stream")
+}
+
+// mayBeServerSentEvent checks if the request might be for a Server-Sent Event stream
+// This is used to set up the request properly before sending it
+func mayBeServerSentEvent(req *http.Request) bool {
+	// Check Accept header for SSE
+	acceptHeader := req.Header.Get("Accept")
+	return strings.Contains(acceptHeader, "text/event-stream")
 }
 
 // handleHTTP2MITM handles HTTP/2 connections in MITM mode
@@ -661,6 +998,12 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Send the request to the target server
 	startTime := time.Now()
 
+	// Check if this might be an SSE request based on patterns and headers
+	potentialSSE := isSSERequest(outReq)
+	if h.proxy.Verbose && potentialSSE {
+		log.Printf("[HTTP/2] Potential SSE request detected based on URL path or Accept header")
+	}
+
 	// Create a transport with HTTP/2 support
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -675,13 +1018,111 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		// Don't automatically decompress responses to allow proper SSE handling
+		DisableCompression: true,
 	}
 
 	// Configure HTTP/2 support for the transport
 	h.proxy.handleHTTP2(transport)
 
+	// Create a custom transport that can detect SSE responses early
+	sseTransport := &earlySSEDetector{
+		base:           transport,
+		responseWriter: w,
+		server:         h.proxy,
+		verbose:        h.proxy.Verbose,
+	}
+
+	// Special handling for potential SSE requests
+	if potentialSSE {
+		if h.proxy.Verbose {
+			log.Printf("[HTTP/2] Using special SSE handling for %s", targetURL.String())
+		}
+
+		// Use a custom client with no timeout for SSE
+		client := &http.Client{
+			Transport: sseTransport,
+			// No timeout for SSE requests
+		}
+
+		// Set special headers for SSE
+		outReq.Header.Set("Accept", "text/event-stream")
+		outReq.Header.Set("Cache-Control", "no-cache")
+		outReq.Header.Set("Connection", "keep-alive")
+
+		// Send the request
+		resp, err := client.Do(outReq)
+		timeTaken := time.Since(startTime)
+
+		if err != nil {
+			log.Printf("[HTTP/2] Error sending request to target server %s: %v", targetURL.String(), err)
+			http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL.String(), err), http.StatusBadGateway)
+			// Log to HAR even if there's an error sending the request (resp might be nil)
+			if h.proxy.HarLogger.IsEnabled() {
+				serverIP := ""
+				if outReq != nil && outReq.URL != nil {
+					serverIP = outReq.URL.Host
+				}
+				h.proxy.HarLogger.AddEntry(r, nil, startTime, timeTaken, serverIP, r.RemoteAddr)
+			}
+			return
+		}
+		defer resp.Body.Close()
+
+		// Log to HAR
+		if h.proxy.HarLogger.IsEnabled() {
+			serverIP := ""
+			if outReq != nil && outReq.URL != nil {
+				serverIP = outReq.URL.Host
+			}
+			h.proxy.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
+		}
+
+		// Check if this is actually an SSE response
+		if isServerSentEvent(resp) {
+			if h.proxy.Verbose {
+				log.Printf("[HTTP/2] Confirmed SSE response from %s", targetURL.String())
+			}
+
+			// Handle SSE response
+			err := h.proxy.handleSSE(w, resp)
+			if err != nil {
+				log.Printf("[SSE] Error handling SSE response: %v", err)
+			}
+			return
+		} else {
+			// Not an SSE response, handle normally
+			if h.proxy.Verbose {
+				log.Printf("[HTTP/2] Expected SSE but got %s from %s", resp.Header.Get("Content-Type"), targetURL.String())
+			}
+
+			// Copy headers from target server's response to our response writer
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+
+			// Set the status code
+			w.WriteHeader(resp.StatusCode)
+
+			// Copy the body from target server's response to our response writer
+			written, err := io.Copy(w, resp.Body)
+			if err != nil {
+				log.Printf("[HTTP/2] Error copying response body: %v", err)
+				// Don't send http.Error here as headers might have already been written
+			}
+
+			if h.proxy.Verbose {
+				log.Printf("[HTTP/2] Copied %d bytes for response body from %s", written, targetURL.String())
+			}
+			return
+		}
+	}
+
+	// For non-SSE requests, use normal handling
 	client := &http.Client{
-		Transport: transport,
+		Transport: sseTransport,
 		Timeout:   30 * time.Second,
 	}
 
@@ -703,13 +1144,23 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Log to HAR
+	// Log to HAR - 但对于SSE响应，我们需要特殊处理
 	if h.proxy.HarLogger.IsEnabled() {
 		serverIP := ""
 		if outReq != nil && outReq.URL != nil {
 			serverIP = outReq.URL.Host
 		}
-		h.proxy.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
+
+		// 检查是否是SSE响应
+		if isServerSentEvent(resp) {
+			// 对于SSE响应，创建一个没有响应体的副本，以避免读取整个响应体
+			respCopy := *resp
+			respCopy.Body = nil
+			h.proxy.HarLogger.AddEntry(r, &respCopy, startTime, timeTaken, serverIP, r.RemoteAddr)
+		} else {
+			// 对于非SSE响应，正常记录
+			h.proxy.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
+		}
 	}
 
 	if h.proxy.Verbose {
@@ -765,6 +1216,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 		}
 	}
 
+	// Ensure critical headers are set for SSE streaming
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Del("Content-Length") // Remove Content-Length to ensure chunked encoding
+
 	// Set the status code
 	w.WriteHeader(resp.StatusCode)
 
@@ -773,6 +1230,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 	if !ok {
 		return fmt.Errorf("streaming not supported")
 	}
+
+	// Flush headers immediately
+	flusher.Flush()
 
 	// Log SSE handling
 	if s.Verbose {
@@ -812,9 +1272,113 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 			}
 		}
 
-		// Flush the data to the client immediately
+		// Flush the data to the client immediately after each line
 		flusher.Flush()
 	}
 
 	return nil
+}
+
+// earlySSEDetector is a custom http.RoundTripper that can detect and handle SSE responses
+// immediately after receiving response headers, before any of the response body is read
+type earlySSEDetector struct {
+	base           http.RoundTripper
+	responseWriter interface{} // Can be http.ResponseWriter or *tls.Conn
+	server         *Server
+	verbose        bool
+}
+
+// RoundTrip implements the http.RoundTripper interface
+func (t *earlySSEDetector) RoundTrip(req *http.Request) (*http.Response, error) {
+	// 创建一个自定义的Transport，它可以拦截响应头
+	transport := &headerInterceptingTransport{
+		base:    t.base,
+		verbose: t.verbose,
+		callback: func(resp *http.Response) (*http.Response, error) {
+			// 检查是否是SSE响应
+			if isServerSentEvent(resp) {
+				if t.verbose {
+					log.Printf("[SSE] Detected SSE response early based on Content-Type header")
+				}
+
+				// 对于SSE响应，创建一个管道来流式传输数据
+				pr, pw := io.Pipe()
+
+				// 创建一个新的响应，使用管道读取器作为响应体
+				newResp := &http.Response{
+					Status:        resp.Status,
+					StatusCode:    resp.StatusCode,
+					Header:        resp.Header.Clone(),
+					Body:          pr, // 使用管道读取器作为新的响应体
+					ContentLength: -1, // 未知长度，用于流式传输
+					Proto:         resp.Proto,
+					ProtoMajor:    resp.ProtoMajor,
+					ProtoMinor:    resp.ProtoMinor,
+				}
+
+				// 确保为SSE流设置关键头部
+				newResp.Header.Set("Content-Type", "text/event-stream")
+				newResp.Header.Set("Cache-Control", "no-cache")
+				newResp.Header.Set("Connection", "keep-alive")
+				newResp.Header.Set("Transfer-Encoding", "chunked")
+
+				// 启动一个goroutine从原始响应中读取并写入我们的管道
+				go func() {
+					defer resp.Body.Close()
+					defer pw.Close()
+
+					// 为原始响应体创建一个读取器
+					reader := bufio.NewReader(resp.Body)
+
+					// 读取并转发每一行
+					for {
+						line, err := reader.ReadBytes('\n')
+						if err != nil {
+							if err == io.EOF {
+								break
+							}
+							log.Printf("[SSE] Error reading SSE stream: %v", err)
+							break
+						}
+
+						// 将行写入我们的管道
+						_, err = pw.Write(line)
+						if err != nil {
+							log.Printf("[SSE] Error writing to pipe: %v", err)
+							break
+						}
+
+						// 如果启用了详细模式，记录事件
+						if t.verbose && len(line) > 1 { // 跳过空行
+							lineStr := strings.TrimSpace(string(line))
+							if strings.HasPrefix(lineStr, "data:") {
+								log.Printf("[SSE] Event data: %s", lineStr)
+							} else if strings.HasPrefix(lineStr, "event:") {
+								log.Printf("[SSE] Event type: %s", lineStr)
+							} else if strings.HasPrefix(lineStr, "id:") {
+								log.Printf("[SSE] Event ID: %s", lineStr)
+							} else if strings.HasPrefix(lineStr, "retry:") {
+								log.Printf("[SSE] Event retry: %s", lineStr)
+							} else if lineStr != "" {
+								log.Printf("[SSE] Event line: %s", lineStr)
+							}
+						}
+					}
+
+					if t.verbose {
+						log.Printf("[SSE] Finished streaming SSE response")
+					}
+				}()
+
+				// 返回带有管道读取器作为响应体的新响应
+				return newResp, nil
+			}
+
+			// 对于非SSE响应，只返回原始响应
+			return resp, nil
+		},
+	}
+
+	// 使用自定义Transport执行请求
+	return transport.RoundTrip(req)
 }

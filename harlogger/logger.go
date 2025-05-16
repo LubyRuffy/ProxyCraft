@@ -204,20 +204,36 @@ func (l *Logger) buildHARResponse(resp *http.Response) Response {
 		bodySize = resp.ContentLength
 	}
 
-	bodyBytes, err := readAndRestoreBody(&resp.Body, resp.ContentLength)
-	if err != nil {
-		log.Printf("Error reading response body for HAR: %v", err)
-	}
-
+	// 检查是否是 SSE 响应
 	mimeType := resp.Header.Get("Content-Type")
-	actualBodySize := int64(len(bodyBytes))
+	isSSE := strings.Contains(mimeType, "text/event-stream")
+
+	var bodyBytes []byte
+	var err error
+	var actualBodySize int64
+
+	if isSSE {
+		// 对于 SSE 响应，不读取响应体
+		log.Printf("Skipping body reading for SSE response")
+		actualBodySize = -1 // 未知大小
+	} else {
+		// 对于非 SSE 响应，正常读取响应体
+		bodyBytes, err = readAndRestoreBody(&resp.Body, resp.ContentLength)
+		if err != nil {
+			log.Printf("Error reading response body for HAR: %v", err)
+		}
+		actualBodySize = int64(len(bodyBytes))
+	}
 
 	content := Content{
 		Size:     actualBodySize,
 		MimeType: mimeType,
 	}
 
-	if len(bodyBytes) > 0 {
+	if isSSE {
+		// 对于 SSE 响应，设置特殊标记
+		content.Text = "[Server-Sent Events stream - body not captured to preserve streaming]"
+	} else if len(bodyBytes) > 0 {
 		contentEncodingHeader := resp.Header.Get("Content-Encoding")
 		// Check if common compression encodings are used.
 		// HAR spec doesn't explicitly state how to handle Content-Encoding for text field,
@@ -236,8 +252,13 @@ func (l *Logger) buildHARResponse(resp *http.Response) Response {
 	}
 
 	// Update bodySize if it was initially -1 (chunked) or different from ContentLength
-	if bodySize == -1 || bodySize != actualBodySize {
+	if !isSSE && (bodySize == -1 || bodySize != actualBodySize) {
 		bodySize = actualBodySize
+	}
+
+	// 对于 SSE 响应，保持 bodySize 为 -1，表示未知大小
+	if isSSE {
+		bodySize = -1
 	}
 
 	return Response{
