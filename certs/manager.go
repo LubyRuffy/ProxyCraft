@@ -44,6 +44,16 @@ func NewManager() (*Manager, error) {
 	return m, nil
 }
 
+// GetCACertPath returns the default CA certificate file path.
+func GetCACertPath() string {
+	return caCertFile
+}
+
+// GetCAKeyPath returns the default CA key file path.
+func GetCAKeyPath() string {
+	return caKeyFile
+}
+
 func (m *Manager) generateCA() error {
 	privKey, err := rsa.GenerateKey(rand.Reader, rsaBits)
 	if err != nil {
@@ -233,11 +243,6 @@ func (m *Manager) GenerateServerCert(host string) (*x509.Certificate, *rsa.Priva
 	}
 
 	return cert, privKey, nil
-}
-
-// GetCACertPath returns the path to the CA certificate file.
-func GetCACertPath() string {
-	return caCertFile
 }
 
 // LoadCustomCA loads a custom CA certificate and private key from the specified files.

@@ -1,2 +1,13 @@
 # Added by goreleaser init:
 dist/
+cover.out
+coverage.html
+coverage.out
+har.json
+ProxyCraft
+traffic.har
+.idea/AugmentWebviewStateStore.xml
+harlogger/test_output.har
+proxy/proxycraft-ca-key.pem
+.idea/CopilotSideBarWebPersist.xml
+proxy/proxycraft-ca.pem

@@ -114,6 +114,20 @@ func calculateHeadersSize(headers http.Header) int64 {
 }
 
 func (l *Logger) buildHARRequest(req *http.Request) Request {
+	// 处理nil请求的情况
+	if req == nil {
+		return Request{
+			Method:      "",
+			URL:         "",
+			HTTPVersion: "",
+			Headers:     []NameValuePair{},
+			QueryString: []NameValuePair{},
+			Cookies:     []Cookie{},
+			HeadersSize: -1,
+			BodySize:    -1,
+		}
+	}
+
 	bodySize := int64(-1)
 	if req.ContentLength > 0 {
 		bodySize = req.ContentLength
