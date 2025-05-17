@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio" // Added for reading requests from TLS connection
+	"bytes" // Added for bytes.Buffer
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -158,8 +159,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer resp.Body.Close()
 
-		// Log to HAR
-		if s.HarLogger.IsEnabled() {
+		// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
+		// 只为非 SSE 响应记录 HAR 条目
+		if !isServerSentEvent(resp) && s.HarLogger.IsEnabled() {
 			serverIP := ""
 			if proxyReq != nil && proxyReq.URL != nil {
 				serverIP = proxyReq.URL.Host
@@ -219,34 +221,15 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[HTTP] Error sending request to target server %s: %v", targetURL, err)
 		http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL, err), http.StatusBadGateway)
 		// Log to HAR even if there's an error sending the request (resp might be nil)
-		if s.HarLogger.IsEnabled() {
-			serverIP := ""
-			if proxyReq != nil && proxyReq.URL != nil {
-				serverIP = proxyReq.URL.Host
-			}
-			s.HarLogger.AddEntry(r, nil, startTime, timeTaken, serverIP, r.RemoteAddr)
-		}
+		s.logToHAR(r, nil, startTime, timeTaken, false)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Log to HAR - 但对于SSE响应，我们需要特殊处理
-	if s.HarLogger.IsEnabled() {
-		serverIP := ""
-		if proxyReq != nil && proxyReq.URL != nil {
-			serverIP = proxyReq.URL.Host
-		}
-
-		// 检查是否是SSE响应
-		if isServerSentEvent(resp) {
-			// 对于SSE响应，创建一个没有响应体的副本，以避免读取整个响应体
-			respCopy := *resp
-			respCopy.Body = nil
-			s.HarLogger.AddEntry(r, &respCopy, startTime, timeTaken, serverIP, r.RemoteAddr)
-		} else {
-			// 对于非SSE响应，正常记录
-			s.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
-		}
+	// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
+	// 只为非 SSE 响应记录 HAR 条目
+	if !isServerSentEvent(resp) {
+		s.logToHAR(r, resp, startTime, timeTaken, false)
 	}
 
 	if s.Verbose {
@@ -261,6 +244,10 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if s.Verbose {
 			log.Printf("[HTTP] Detected Server-Sent Events response from %s", targetURL)
 		}
+
+		// 对于 SSE 响应，不在这里记录 HAR 条目，而是在 handleSSE 中完成后记录
+		// 删除之前添加的 HAR 条目（如果有的话）
+		// 注意：这里没有实际删除功能，因为 Logger 没有提供删除条目的方法
 
 		// Handle SSE response
 		err := s.handleSSE(w, resp)
@@ -573,31 +560,21 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				log.Printf("[MITM for %s] Error sending request to target %s: %v", r.Host, targetURL.String(), err)
 				// Log to HAR even if there's an error
-				if s.HarLogger.IsEnabled() {
-					connectionID := ""
-					if tlsClientConn != nil {
-						connectionID = tlsClientConn.RemoteAddr().String()
-					}
-					s.HarLogger.AddEntry(tunneledReq, nil, startTime, timeTaken, r.Host, connectionID)
-				}
+				s.logToHAR(tunneledReq, nil, startTime, timeTaken, false)
 				break
 			}
 			defer resp.Body.Close()
 
 			// Log to HAR
-			if s.HarLogger.IsEnabled() {
-				connectionID := ""
-				if tlsClientConn != nil {
-					connectionID = tlsClientConn.RemoteAddr().String()
-				}
-				s.HarLogger.AddEntry(tunneledReq, resp, startTime, timeTaken, r.Host, connectionID)
-			}
+			s.logToHAR(tunneledReq, resp, startTime, timeTaken, isServerSentEvent(resp))
 
 			// Check if this is actually an SSE response
 			if isServerSentEvent(resp) {
 				if s.Verbose {
 					log.Printf("[MITM for %s] Confirmed SSE response", r.Host)
 				}
+
+				// 对于 SSE 响应，不在这里记录 HAR 条目，而是在处理完成后记录
 
 				// For SSE in MITM mode, we need to handle it differently
 				// First, write the response headers
@@ -619,6 +596,9 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 				writer.WriteString("\r\n")
 				writer.Flush()
 
+				// 创建一个缓冲区来收集完整的 SSE 数据
+				buffer := &bytes.Buffer{}
+
 				// Now read and forward SSE events
 				reader := bufio.NewReader(resp.Body)
 				for {
@@ -631,31 +611,46 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 
-					// Write the event data to the client
+					// 写入客户端
 					_, err = writer.Write(line)
 					if err != nil {
 						log.Printf("[MITM for %s] Error writing SSE data to client: %v", r.Host, err)
 						break
 					}
 
-					// Log the event if verbose
-					if s.Verbose && len(line) > 1 { // Skip empty lines
-						lineStr := strings.TrimSpace(string(line))
-						if strings.HasPrefix(lineStr, "data:") {
-							log.Printf("[SSE] Event data: %s", lineStr)
-						} else if strings.HasPrefix(lineStr, "event:") {
-							log.Printf("[SSE] Event type: %s", lineStr)
-						} else if strings.HasPrefix(lineStr, "id:") {
-							log.Printf("[SSE] Event ID: %s", lineStr)
-						} else if strings.HasPrefix(lineStr, "retry:") {
-							log.Printf("[SSE] Event retry: %s", lineStr)
-						} else if lineStr != "" {
-							log.Printf("[SSE] Event line: %s", lineStr)
-						}
+					// 同时写入缓冲区，用于后续的 HAR 记录
+					_, bufErr := buffer.Write(line)
+					if bufErr != nil {
+						log.Printf("[MITM for %s] Error writing SSE data to buffer: %v", r.Host, bufErr)
 					}
+
+					// Log the event if verbose
+					lineStr := strings.TrimSpace(string(line))
+					logSSEEvent(lineStr, s.Verbose)
 
 					// Flush the data to the client immediately
 					writer.Flush()
+				}
+
+				// 流结束后，记录 HAR 条目
+				if s.HarLogger.IsEnabled() {
+					// 创建一个新的响应，包含收集到的完整数据
+					newResp := &http.Response{
+						Status:     resp.Status,
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(buffer.Bytes())),
+						Proto:      resp.Proto,
+						ProtoMajor: resp.ProtoMajor,
+						ProtoMinor: resp.ProtoMinor,
+					}
+
+					// 记录 HAR 条目，包含完整的 SSE 数据
+					s.logToHAR(tunneledReq, newResp, startTime, timeTaken, false) // 这里使用 false 因为我们已经有了完整的数据
+
+					if s.Verbose {
+						log.Printf("[MITM for %s] Recorded complete SSE response in HAR log (%d bytes)", r.Host, buffer.Len())
+					}
 				}
 
 				resp.Body.Close()
@@ -699,33 +694,14 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[MITM for %s] Error sending request to target %s: %v", r.Host, targetURL.String(), err)
 			// Log to HAR even if there's an error
-			if s.HarLogger.IsEnabled() {
-				connectionID := ""
-				if tlsClientConn != nil {
-					connectionID = tlsClientConn.RemoteAddr().String()
-				}
-				s.HarLogger.AddEntry(tunneledReq, nil, startTime, timeTaken, r.Host, connectionID)
-			}
+			s.logToHAR(tunneledReq, nil, startTime, timeTaken, false)
 			break
 		}
 
-		// Log to HAR - 但对于SSE响应，我们需要特殊处理
-		if s.HarLogger.IsEnabled() {
-			connectionID := ""
-			if tlsClientConn != nil {
-				connectionID = tlsClientConn.RemoteAddr().String()
-			}
-
-			// 检查是否是SSE响应
-			if isServerSentEvent(resp) {
-				// 对于SSE响应，创建一个没有响应体的副本，以避免读取整个响应体
-				respCopy := *resp
-				respCopy.Body = nil
-				s.HarLogger.AddEntry(tunneledReq, &respCopy, startTime, timeTaken, r.Host, connectionID)
-			} else {
-				// 对于非SSE响应，正常记录
-				s.HarLogger.AddEntry(tunneledReq, resp, startTime, timeTaken, r.Host, connectionID)
-			}
+		// Log to HAR - 但对于SSE响应，我们在处理 SSE 时记录
+		// 只为非 SSE 响应记录 HAR 条目
+		if !isServerSentEvent(resp) {
+			s.logToHAR(tunneledReq, resp, startTime, timeTaken, false)
 		}
 
 		if s.Verbose {
@@ -781,20 +757,8 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Log the event if verbose
-				if s.Verbose && len(line) > 1 { // Skip empty lines
-					lineStr := strings.TrimSpace(string(line))
-					if strings.HasPrefix(lineStr, "data:") {
-						log.Printf("[SSE] Event data: %s", lineStr)
-					} else if strings.HasPrefix(lineStr, "event:") {
-						log.Printf("[SSE] Event type: %s", lineStr)
-					} else if strings.HasPrefix(lineStr, "id:") {
-						log.Printf("[SSE] Event ID: %s", lineStr)
-					} else if strings.HasPrefix(lineStr, "retry:") {
-						log.Printf("[SSE] Event retry: %s", lineStr)
-					} else if lineStr != "" {
-						log.Printf("[SSE] Event line: %s", lineStr)
-					}
-				}
+				lineStr := strings.TrimSpace(string(line))
+				logSSEEvent(lineStr, s.Verbose)
 
 				// Flush the data to the client immediately
 				writer.Flush()
@@ -839,6 +803,56 @@ func logHeader(header http.Header, prefix string) {
 	}
 }
 
+// logSSEEvent 记录 SSE 事件的日志
+// 这个函数集中了所有 SSE 事件日志记录逻辑，避免代码重复
+func logSSEEvent(lineStr string, verbose bool) {
+	if !verbose || len(lineStr) <= 1 { // Skip empty lines or when verbose is disabled
+		return
+	}
+
+	if strings.HasPrefix(lineStr, "data:") {
+		log.Printf("[SSE] Event data: %s", lineStr)
+	} else if strings.HasPrefix(lineStr, "event:") {
+		log.Printf("[SSE] Event type: %s", lineStr)
+	} else if strings.HasPrefix(lineStr, "id:") {
+		log.Printf("[SSE] Event ID: %s", lineStr)
+	} else if strings.HasPrefix(lineStr, "retry:") {
+		log.Printf("[SSE] Event retry: %s", lineStr)
+	} else if lineStr != "" {
+		log.Printf("[SSE] Event line: %s", lineStr)
+	}
+}
+
+// logToHAR 是一个辅助方法，用于统一处理 HAR 日志记录
+// 这个方法集中了所有 HAR 日志记录逻辑，避免代码重复
+func (s *Server) logToHAR(req *http.Request, resp *http.Response, startTime time.Time, timeTaken time.Duration, isSSE bool) {
+	if !s.HarLogger.IsEnabled() {
+		return
+	}
+
+	// 获取服务器 IP 和连接 ID
+	serverIP := ""
+	connectionID := ""
+
+	// 从请求中获取服务器 IP
+	if req != nil {
+		connectionID = req.RemoteAddr
+		if req.URL != nil {
+			serverIP = req.URL.Host
+		}
+	}
+
+	// 对于 SSE 响应，创建一个没有响应体的副本，以避免读取整个响应体
+	if isSSE && resp != nil {
+		respCopy := *resp
+		respCopy.Body = nil
+		s.HarLogger.AddEntry(req, &respCopy, startTime, timeTaken, serverIP, connectionID)
+	} else {
+		// 对于非 SSE 响应或错误情况，正常记录
+		s.HarLogger.AddEntry(req, resp, startTime, timeTaken, serverIP, connectionID)
+	}
+}
+
 // handleHTTP2 configures HTTP/2 support for client and server connections
 func (s *Server) handleHTTP2(transport *http.Transport) {
 	// Configure HTTP/2 support for the transport
@@ -857,7 +871,34 @@ func (s *Server) handleHTTP2(transport *http.Transport) {
 func isServerSentEvent(resp *http.Response) bool {
 	// Check Content-Type header for SSE
 	contentType := resp.Header.Get("Content-Type")
-	return strings.Contains(contentType, "text/event-stream")
+
+	// 检查是否是标准的 SSE Content-Type
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+
+	// 确保 Request 不为 nil
+	if resp.Request == nil || resp.Request.URL == nil {
+		return false
+	}
+
+	// 检查是否是 JSON 流
+	// 注意：httpbin.org/stream 返回的是 JSON 流，而不是真正的 SSE
+	// 但我们仍然可以将其作为流式处理
+	if strings.Contains(contentType, "application/json") && strings.Contains(resp.Request.URL.Path, "/stream") {
+		return true
+	}
+
+	// 检查是否是 OpenAI 的流式 API
+	if strings.Contains(contentType, "application/json") && (strings.Contains(resp.Request.URL.Path, "/completions") ||
+		strings.Contains(resp.Request.URL.Path, "/chat/completions")) {
+		// 检查是否有 stream=true 参数
+		if resp.Request.URL.Query().Get("stream") == "true" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // headerInterceptingTransport 是一个自定义的 http.RoundTripper，它可以在接收到响应头后立即拦截响应
@@ -1058,24 +1099,15 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[HTTP/2] Error sending request to target server %s: %v", targetURL.String(), err)
 			http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL.String(), err), http.StatusBadGateway)
 			// Log to HAR even if there's an error sending the request (resp might be nil)
-			if h.proxy.HarLogger.IsEnabled() {
-				serverIP := ""
-				if outReq != nil && outReq.URL != nil {
-					serverIP = outReq.URL.Host
-				}
-				h.proxy.HarLogger.AddEntry(r, nil, startTime, timeTaken, serverIP, r.RemoteAddr)
-			}
+			h.proxy.logToHAR(r, nil, startTime, timeTaken, false)
 			return
 		}
 		defer resp.Body.Close()
 
-		// Log to HAR
-		if h.proxy.HarLogger.IsEnabled() {
-			serverIP := ""
-			if outReq != nil && outReq.URL != nil {
-				serverIP = outReq.URL.Host
-			}
-			h.proxy.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
+		// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
+		// 只为非 SSE 响应记录 HAR 条目
+		if !isServerSentEvent(resp) {
+			h.proxy.logToHAR(r, resp, startTime, timeTaken, false)
 		}
 
 		// Check if this is actually an SSE response
@@ -1176,6 +1208,8 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[HTTP/2] Detected Server-Sent Events response from %s", targetURL.String())
 		}
 
+		// 对于 SSE 响应，不在这里记录 HAR 条目，而是在 handleSSE 中完成后记录
+
 		// Handle SSE response
 		err := h.proxy.handleSSE(w, resp)
 		if err != nil {
@@ -1207,8 +1241,46 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ResponseBodyTee 是一个结构，用于同时将数据写入两个目的地
+type ResponseBodyTee struct {
+	buffer  *bytes.Buffer // 用于收集完整的响应体
+	writer  io.Writer     // 原始的响应写入器
+	flusher http.Flusher  // 用于刷新数据
+}
+
+// Write 实现 io.Writer 接口
+func (t *ResponseBodyTee) Write(p []byte) (n int, err error) {
+	// 写入原始响应写入器
+	n, err = t.writer.Write(p)
+	if err != nil {
+		return n, err
+	}
+
+	// 同时写入缓冲区
+	_, bufErr := t.buffer.Write(p)
+	if bufErr != nil {
+		// 如果缓冲区写入失败，仅记录日志，不影响原始写入
+		log.Printf("[SSE] Error writing to buffer: %v", bufErr)
+	}
+
+	// 刷新数据
+	if t.flusher != nil {
+		t.flusher.Flush()
+	}
+
+	return n, nil
+}
+
+// GetBuffer 返回收集到的完整数据
+func (t *ResponseBodyTee) GetBuffer() *bytes.Buffer {
+	return t.buffer
+}
+
 // handleSSE handles Server-Sent Events responses
 func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
+	// 记录开始时间，用于后续的 HAR 记录
+	startTime := time.Now()
+
 	// Set appropriate headers for SSE
 	for k, vv := range resp.Header {
 		for _, v := range vv {
@@ -1239,6 +1311,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 		log.Printf("[SSE] Handling Server-Sent Events stream")
 	}
 
+	// 创建一个 ResponseBodyTee 来同时处理流和记录数据
+	tee := &ResponseBodyTee{
+		buffer:  &bytes.Buffer{},
+		writer:  w,
+		flusher: flusher,
+	}
+
 	// Read and forward SSE events
 	reader := bufio.NewReader(resp.Body)
 	for {
@@ -1250,30 +1329,39 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 			return fmt.Errorf("error reading SSE stream: %v", err)
 		}
 
-		// Write the event data to the client
-		_, err = w.Write(line)
+		// 写入 tee，它会同时写入客户端和缓冲区
+		_, err = tee.Write(line)
 		if err != nil {
-			return fmt.Errorf("error writing SSE data to client: %v", err)
+			return fmt.Errorf("error writing SSE data: %v", err)
 		}
 
 		// Log the event if verbose
-		if s.Verbose && len(line) > 1 { // Skip empty lines
-			lineStr := strings.TrimSpace(string(line))
-			if strings.HasPrefix(lineStr, "data:") {
-				log.Printf("[SSE] Event data: %s", lineStr)
-			} else if strings.HasPrefix(lineStr, "event:") {
-				log.Printf("[SSE] Event type: %s", lineStr)
-			} else if strings.HasPrefix(lineStr, "id:") {
-				log.Printf("[SSE] Event ID: %s", lineStr)
-			} else if strings.HasPrefix(lineStr, "retry:") {
-				log.Printf("[SSE] Event retry: %s", lineStr)
-			} else if lineStr != "" {
-				log.Printf("[SSE] Event line: %s", lineStr)
-			}
+		lineStr := strings.TrimSpace(string(line))
+		logSSEEvent(lineStr, s.Verbose)
+	}
+
+	// 流结束后，记录 HAR 条目
+	if s.HarLogger.IsEnabled() {
+		// 计算流处理时间
+		timeTaken := time.Since(startTime)
+
+		// 创建一个新的响应，包含收集到的完整数据
+		newResp := &http.Response{
+			Status:     resp.Status,
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header.Clone(),
+			Body:       io.NopCloser(bytes.NewReader(tee.GetBuffer().Bytes())),
+			Proto:      resp.Proto,
+			ProtoMajor: resp.ProtoMajor,
+			ProtoMinor: resp.ProtoMinor,
 		}
 
-		// Flush the data to the client immediately after each line
-		flusher.Flush()
+		// 使用原始请求记录 HAR 条目
+		s.logToHAR(resp.Request, newResp, startTime, timeTaken, false) // 这里使用 false 因为我们已经有了完整的数据
+
+		if s.Verbose {
+			log.Printf("[SSE] Recorded complete SSE response in HAR log (%d bytes)", tee.GetBuffer().Len())
+		}
 	}
 
 	return nil
@@ -1349,20 +1437,8 @@ func (t *earlySSEDetector) RoundTrip(req *http.Request) (*http.Response, error) 
 						}
 
 						// 如果启用了详细模式，记录事件
-						if t.verbose && len(line) > 1 { // 跳过空行
-							lineStr := strings.TrimSpace(string(line))
-							if strings.HasPrefix(lineStr, "data:") {
-								log.Printf("[SSE] Event data: %s", lineStr)
-							} else if strings.HasPrefix(lineStr, "event:") {
-								log.Printf("[SSE] Event type: %s", lineStr)
-							} else if strings.HasPrefix(lineStr, "id:") {
-								log.Printf("[SSE] Event ID: %s", lineStr)
-							} else if strings.HasPrefix(lineStr, "retry:") {
-								log.Printf("[SSE] Event retry: %s", lineStr)
-							} else if lineStr != "" {
-								log.Printf("[SSE] Event line: %s", lineStr)
-							}
-						}
+						lineStr := strings.TrimSpace(string(line))
+						logSSEEvent(lineStr, t.verbose)
 					}
 
 					if t.verbose {
