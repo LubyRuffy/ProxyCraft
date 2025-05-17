@@ -141,35 +141,28 @@ ProxyCraft 能够正确处理 SSE 连接（`Content-Type: text/event-stream`）�
 输出格式示例：
 
 ```
-[DUMP] GET http://example.com/api/data HTTP/1.1
-[DUMP] Request Headers:
-[DUMP]   User-Agent: Mozilla/5.0
-[DUMP]   Accept: application/json
-[DUMP]   Content-Type: application/json
-[DUMP] Request Body (32 bytes):
+>>>>>>>>>>>>>>>>>>>>
+GET http://example.com/api/data HTTP/1.1
+User-Agent: Mozilla/5.0
+Accept: application/json
+Content-Type: application/json
+
 {"query": "test", "limit": 10}
+>>>>>>>>>>>>>>>>>>>>
+<<<<<<<<<<<<<<<<<<<<
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 128
+Cache-Control: no-cache
 
-[DUMP] GET example.com/api/data -> 200 OK
-[DUMP] Response Headers:
-[DUMP]   Content-Type: application/json
-[DUMP]   Content-Length: 128
-[DUMP]   Cache-Control: no-cache
-[DUMP] Response Body (128 bytes):
 {"status": "success", "data": [...]}
-
-[DUMP] POST example.com/api/stream -> SSE Stream
-[DUMP] Response Headers:
-[DUMP]   Content-Type: text/event-stream
-[DUMP]   Cache-Control: no-cache
-[DUMP]   Connection: keep-alive
-[DUMP] Starting SSE stream
-[DUMP] POST example.com/api/stream -> SSE Stream data: {"id": 1, "message": "Hello"}
+<<<<<<<<<<<<<<<<<<<<
 ```
 
 对于二进制内容，会显示如下信息：
 
 ```
-[DUMP] GET example.com/image.jpg -> Binary request body detected (1024 bytes), not displaying
+Binary request body detected (1024 bytes), not displaying
 ```
 
 ### CA 证书管理
