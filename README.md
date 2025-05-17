@@ -12,6 +12,7 @@ ProxyCraft 是一款轻量级、高性能的命令行代理工具，本身为 HT
 - **SSE 协议支持**: 能够正确代理并展示 Server-Sent Events 流量
 - **HTTPS 解密**: 支持中间人 (MITM) 模式以解密和检查 HTTPS 流量
 - **HAR 日志记录**: 可将捕获的流量保存为 HAR 格式文件，便于后续分析
+- **流量内容输出**: 支持直接在控制台输出请求和响应内容，便于实时分析
 - **命令行友好**: 所有功能通过命令行参数和输出进行交互，易于脚本化和集成到自动化流程中
 - **轻量高效**: 资源占用低，启动速度快，对系统性能影响小
 
@@ -51,6 +52,9 @@ go build -o proxycraft
 # 将流量保存为 HAR 文件
 ./proxycraft -o traffic.har
 
+# 在控制台输出流量内容（不显示二进制数据）
+./proxycraft -dump
+
 # 导出 CA 证书（用于浏览器信任）
 ./proxycraft -export-ca proxycraft-ca.pem
 
@@ -82,6 +86,7 @@ curl --cacert proxycraft-ca.pem --proxy http://127.0.0.1:8080 https://example.co
 -p, -listen-port int      Port to listen on (default 8080)
 -v, -verbose             Enable verbose output
 -o, -output-file string  Save traffic to FILE (HAR format recommended)
+-dump                    Dump traffic content to console with headers (binary content will not be displayed)
 -filter string           Filter displayed traffic (e.g., "host=example.com")
 -export-ca string        Export the root CA certificate to FILEPATH and exit
 -use-ca string           Use custom root CA certificate from CERT_PATH
@@ -123,6 +128,49 @@ ProxyCraft 能够正确处理 SSE 连接（`Content-Type: text/event-stream`）�
 - 其他元数据
 
 这些文件可以被许多工具（如 Chrome DevTools、HAR 查看器等）导入和分析。
+
+### 流量内容输出
+
+使用 `-dump` 参数可以在控制台直接输出捕获的流量内容：
+
+- 显示完整的 HTTP 请求和响应头部
+- 自动识别并跳过二进制内容（如图片、视频、PDF 等）
+- 显示所有文本格式的请求和响应内容
+- 支持 SSE 流式内容的实时输出
+
+输出格式示例：
+
+```
+[DUMP] GET http://example.com/api/data HTTP/1.1
+[DUMP] Request Headers:
+[DUMP]   User-Agent: Mozilla/5.0
+[DUMP]   Accept: application/json
+[DUMP]   Content-Type: application/json
+[DUMP] Request Body (32 bytes):
+{"query": "test", "limit": 10}
+
+[DUMP] GET example.com/api/data -> 200 OK
+[DUMP] Response Headers:
+[DUMP]   Content-Type: application/json
+[DUMP]   Content-Length: 128
+[DUMP]   Cache-Control: no-cache
+[DUMP] Response Body (128 bytes):
+{"status": "success", "data": [...]}
+
+[DUMP] POST example.com/api/stream -> SSE Stream
+[DUMP] Response Headers:
+[DUMP]   Content-Type: text/event-stream
+[DUMP]   Cache-Control: no-cache
+[DUMP]   Connection: keep-alive
+[DUMP] Starting SSE stream
+[DUMP] POST example.com/api/stream -> SSE Stream data: {"id": 1, "message": "Hello"}
+```
+
+对于二进制内容，会显示如下信息：
+
+```
+[DUMP] GET example.com/image.jpg -> Binary request body detected (1024 bytes), not displaying
+```
 
 ### CA 证书管理
 

@@ -26,10 +26,11 @@ type Server struct {
 	HarLogger     *harlogger.Logger // Added for HAR logging
 	EnableMITM    bool              // 是否启用MITM模式，默认为false表示直接隧道模式
 	UpstreamProxy *url.URL          // 上层代理服务器URL，如果为nil则直接连接
+	DumpTraffic   bool              // 是否将抓包内容输出到控制台
 }
 
 // NewServer creates a new proxy server instance
-func NewServer(addr string, certManager *certs.Manager, verbose bool, harLogger *harlogger.Logger, enableMITM bool, upstreamProxy *url.URL) *Server {
+func NewServer(addr string, certManager *certs.Manager, verbose bool, harLogger *harlogger.Logger, enableMITM bool, upstreamProxy *url.URL, dumpTraffic bool) *Server {
 	return &Server{
 		Addr:          addr,
 		CertManager:   certManager,
@@ -37,6 +38,7 @@ func NewServer(addr string, certManager *certs.Manager, verbose bool, harLogger 
 		HarLogger:     harLogger,
 		EnableMITM:    enableMITM,
 		UpstreamProxy: upstreamProxy,
+		DumpTraffic:   dumpTraffic,
 	}
 }
 
@@ -51,7 +53,7 @@ func (s *Server) Start() error {
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.Verbose {
 		log.Printf("[HTTP] Received request: %s %s %s %s", r.Method, r.Host, r.URL.String(), r.Proto)
-		logHeader(r.Header, "[HTTP] Request Headers:")
+		//logHeader(r.Header, "[HTTP] Request Headers:")
 	} else {
 		log.Printf("[HTTP] %s %s%s", r.Method, r.Host, r.URL.RequestURI())
 	}
@@ -242,9 +244,17 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		s.logToHAR(r, resp, startTime, timeTaken, false)
 	}
 
+	// 如果启用了流量输出，输出请求和响应内容
+	if s.DumpTraffic {
+		s.dumpRequestBody(r)
+		if !isServerSentEvent(resp) { // SSE响应在handleSSE中处理
+			s.dumpResponseBody(resp)
+		}
+	}
+
 	if s.Verbose {
 		log.Printf("[HTTP] Received response from %s: %d %s", targetURL, resp.StatusCode, resp.Status)
-		logHeader(resp.Header, fmt.Sprintf("[HTTP] Response Headers from %s:", targetURL))
+		//logHeader(resp.Header, fmt.Sprintf("[HTTP] Response Headers from %s:", targetURL))
 	} else {
 		log.Printf("[HTTP] %s %s%s -> %d %s", r.Method, r.Host, r.URL.RequestURI(), resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
@@ -512,7 +522,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 
 		if s.Verbose {
 			log.Printf("[MITM for %s] Received tunneled request: %s %s%s %s", r.Host, tunneledReq.Method, tunneledReq.Host, tunneledReq.URL.String(), tunneledReq.Proto)
-			logHeader(tunneledReq.Header, fmt.Sprintf("[MITM for %s] Tunneled Request Headers:", r.Host))
+			//logHeader(tunneledReq.Header, fmt.Sprintf("[MITM for %s] Tunneled Request Headers:", r.Host))
 		} else {
 			log.Printf("[MITM for %s] %s %s%s", r.Host, tunneledReq.Method, tunneledReq.Host, tunneledReq.URL.RequestURI())
 		}
@@ -773,9 +783,17 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			s.logToHAR(tunneledReq, resp, startTime, timeTaken, false)
 		}
 
+		// 如果启用了流量输出，输出请求和响应内容
+		if s.DumpTraffic {
+			s.dumpRequestBody(tunneledReq)
+			if !isServerSentEvent(resp) { // SSE响应在处理SSE时输出
+				s.dumpResponseBody(resp)
+			}
+		}
+
 		if s.Verbose {
 			log.Printf("[MITM for %s] Received response from %s: %d %s", r.Host, targetURL.String(), resp.StatusCode, resp.Status)
-			logHeader(resp.Header, fmt.Sprintf("[MITM for %s] Response Headers from %s:", r.Host, targetURL.String()))
+			//logHeader(resp.Header, fmt.Sprintf("[MITM for %s] Response Headers from %s:", r.Host, targetURL.String()))
 		} else {
 			log.Printf("[MITM for %s] %s %s%s -> %d %s", r.Host, tunneledReq.Method, tunneledReq.Host, tunneledReq.URL.RequestURI(), resp.StatusCode, resp.Header.Get("Content-Type"))
 		}
@@ -889,6 +907,146 @@ func logSSEEvent(lineStr string, verbose bool) {
 		log.Printf("[SSE] Event retry: %s", lineStr)
 	} else if lineStr != "" {
 		log.Printf("[SSE] Event line: %s", lineStr)
+	}
+}
+
+// isBinaryContent 检查内容是否为二进制
+func isBinaryContent(data []byte, contentType string) bool {
+	// 首先检查 Content-Type
+	if strings.HasPrefix(contentType, "image/") ||
+		strings.HasPrefix(contentType, "audio/") ||
+		strings.HasPrefix(contentType, "video/") ||
+		strings.HasPrefix(contentType, "application/octet-stream") ||
+		strings.HasPrefix(contentType, "application/pdf") ||
+		strings.HasPrefix(contentType, "application/zip") ||
+		strings.HasPrefix(contentType, "application/x-gzip") ||
+		strings.Contains(contentType, "compressed") ||
+		strings.Contains(contentType, "binary") {
+		return true
+	}
+
+	// 如果没有内容，不是二进制
+	if len(data) == 0 {
+		return false
+	}
+
+	// 检查数据中是否包含太多的非打印字符
+	binaryCount := 0
+	for i := 0; i < len(data) && i < 512; i++ { // 只检查前512字节
+		if data[i] < 7 || (data[i] > 14 && data[i] < 32) || data[i] > 127 {
+			binaryCount++
+		}
+	}
+
+	// 如果非打印字符超过一定比例，认为是二进制
+	return float64(binaryCount)/float64(min(len(data), 512)) > 0.1
+}
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// readAndRestoreBody 读取并恢复请求/响应体
+func readAndRestoreBody(bodySlot *io.ReadCloser, contentLength int64) ([]byte, error) {
+	if bodySlot == nil || *bodySlot == nil || *bodySlot == http.NoBody {
+		return nil, nil
+	}
+
+	// 读取全部内容
+	bodyBytes, err := io.ReadAll(*bodySlot)
+	_ = (*bodySlot).Close() // 关闭原始体
+
+	if err != nil {
+		// 出错时，将体替换为空读取器以防止进一步错误
+		*bodySlot = io.NopCloser(strings.NewReader("")) // 出错时设置为空读取器
+		return nil, err
+	}
+
+	*bodySlot = io.NopCloser(bytes.NewBuffer(bodyBytes)) // 恢复体
+	return bodyBytes, nil
+}
+
+// dumpRequestBody 输出请求头部和体内容
+func (s *Server) dumpRequestBody(req *http.Request) {
+	if !s.DumpTraffic {
+		return
+	}
+
+	fmt.Println(strings.Repeat(">", 20))
+	defer fmt.Println(strings.Repeat(">", 20))
+
+	// 输出请求行
+	fmt.Printf("%s %s %s\n", req.Method, req.URL, req.Proto)
+
+	// 输出请求头部
+	//fmt.Printf("Request Headers:\n")
+	for name, values := range req.Header {
+		for _, value := range values {
+			fmt.Printf("%s: %s\n", name, value)
+		}
+	}
+
+	// 读取并恢复请求体
+	bodyBytes, err := readAndRestoreBody(&req.Body, req.ContentLength)
+	if err != nil {
+		log.Printf("Error reading request body for dump: %v\n", err)
+		return
+	}
+
+	// 检查是否为二进制内容
+	contentType := req.Header.Get("Content-Type")
+	if isBinaryContent(bodyBytes, contentType) {
+		log.Printf("Binary request body detected (%d bytes), not displaying\n", len(bodyBytes))
+		return
+	}
+
+	// 输出文本内容
+	if len(bodyBytes) > 0 {
+		fmt.Printf("\n%s\n", string(bodyBytes))
+	}
+}
+
+// dumpResponseBody 输出响应头部和体内容
+func (s *Server) dumpResponseBody(resp *http.Response) {
+	if !s.DumpTraffic || resp == nil {
+		return
+	}
+
+	fmt.Println(strings.Repeat("<", 20))
+	defer fmt.Println(strings.Repeat("<", 20))
+
+	// 输出响应状态行
+	fmt.Printf("%s %s\n", resp.Proto, resp.Status)
+
+	// 输出响应头部
+	//fmt.Printf("Response Headers:\n")
+	for name, values := range resp.Header {
+		for _, value := range values {
+			fmt.Printf("%s: %s\n", name, value)
+		}
+	}
+
+	// 读取并恢复响应体
+	bodyBytes, err := readAndRestoreBody(&resp.Body, resp.ContentLength)
+	if err != nil {
+		log.Printf("Error reading response body for dump: %v\n", err)
+		return
+	}
+
+	// 检查是否为二进制内容
+	contentType := resp.Header.Get("Content-Type")
+	if isBinaryContent(bodyBytes, contentType) {
+		log.Printf("Binary response body detected (%d bytes), not displaying\n", len(bodyBytes))
+		return
+	}
+
+	// 输出文本内容
+	if len(bodyBytes) > 0 {
+		fmt.Printf("\n%s\n", string(bodyBytes))
 	}
 }
 
@@ -1069,7 +1227,7 @@ type http2MITMConn struct {
 func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.proxy.Verbose {
 		log.Printf("[HTTP/2] Received request: %s %s", r.Method, r.URL.String())
-		logHeader(r.Header, "[HTTP/2] Request Headers:")
+		//logHeader(r.Header, "[HTTP/2] Request Headers:")
 	} else {
 		log.Printf("[HTTP/2] %s %s%s", r.Method, r.Host, r.URL.RequestURI())
 	}
@@ -1272,9 +1430,17 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 如果启用了流量输出，输出请求和响应内容
+	if h.proxy.DumpTraffic {
+		h.proxy.dumpRequestBody(r)
+		if !isServerSentEvent(resp) { // SSE响应在handleSSE中处理
+			h.proxy.dumpResponseBody(resp)
+		}
+	}
+
 	if h.proxy.Verbose {
 		log.Printf("[HTTP/2] Received response from %s: %d %s", targetURL.String(), resp.StatusCode, resp.Status)
-		logHeader(resp.Header, fmt.Sprintf("[HTTP/2] Response Headers from %s:", targetURL.String()))
+		//logHeader(resp.Header, fmt.Sprintf("[HTTP/2] Response Headers from %s:", targetURL.String()))
 	} else {
 		log.Printf("[HTTP/2] %s %s%s -> %d %s", r.Method, r.Host, r.URL.RequestURI(), resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
@@ -1397,6 +1563,26 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 
 	// Read and forward SSE events
 	reader := bufio.NewReader(resp.Body)
+
+	// 如果启用了流量输出，初始化前缀并输出头部
+	var dumpPrefix string
+	if s.DumpTraffic {
+		dumpPrefix = fmt.Sprintf("[DUMP] %s %s%s -> SSE Stream", resp.Request.Method, resp.Request.Host, resp.Request.URL.RequestURI())
+
+		// 输出响应状态行
+		fmt.Printf("%s %s\n", dumpPrefix, resp.Status)
+
+		// 输出响应头部
+		fmt.Printf("%s Response Headers:\n", dumpPrefix)
+		for name, values := range resp.Header {
+			for _, value := range values {
+				fmt.Printf("%s   %s: %s\n", dumpPrefix, name, value)
+			}
+		}
+
+		fmt.Printf("%s Starting SSE stream\n", dumpPrefix)
+	}
+
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -1415,6 +1601,11 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 		// Log the event if verbose
 		lineStr := strings.TrimSpace(string(line))
 		logSSEEvent(lineStr, s.Verbose)
+
+		// 如果启用了流量输出，输出 SSE 事件
+		if s.DumpTraffic && lineStr != "" {
+			fmt.Printf("%s %s\n", dumpPrefix, lineStr)
+		}
 	}
 
 	// 流结束后，记录 HAR 条目

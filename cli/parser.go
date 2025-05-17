@@ -21,6 +21,7 @@ type Config struct {
 	ShowHelp         bool
 	EnableMITM       bool   // Enable MITM mode for HTTPS traffic inspection
 	UpstreamProxy    string // Upstream proxy URL (e.g., "http://proxy.example.com:8080")
+	DumpTraffic      bool   // Enable dumping traffic content to console
 }
 
 // ParseFlags parses the command-line arguments and returns a Config struct.
@@ -42,6 +43,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.UseCAKeyPath, "use-key", "", "Use custom root CA private key from KEY_PATH")
 	flag.BoolVar(&cfg.EnableMITM, "mitm", false, "Enable MITM mode for HTTPS traffic inspection")
 	flag.StringVar(&cfg.UpstreamProxy, "upstream-proxy", "", "Upstream proxy URL (e.g., \"http://proxy.example.com:8080\")")
+	flag.BoolVar(&cfg.DumpTraffic, "dump", false, "Dump traffic content to console with headers (binary content will not be displayed)")
 
 	// Custom help flag
 	flag.BoolVar(&cfg.ShowHelp, "h", false, "Show this help message and exit")

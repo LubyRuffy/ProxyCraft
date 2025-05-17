@@ -93,7 +93,12 @@ func main() {
 	}
 
 	// Initialize and start the proxy server
-	proxyServer := proxy.NewServer(listenAddr, certManager, cfg.Verbose, harLogger, cfg.EnableMITM, upstreamProxyURL)
+	proxyServer := proxy.NewServer(listenAddr, certManager, cfg.Verbose, harLogger, cfg.EnableMITM, upstreamProxyURL, cfg.DumpTraffic)
+
+	// 如果启用了流量输出
+	if cfg.DumpTraffic {
+		fmt.Println("Traffic dump enabled - HTTP request and response content will be displayed in console")
+	}
 
 	// Log MITM mode status
 	if cfg.EnableMITM {
