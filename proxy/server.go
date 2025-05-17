@@ -171,6 +171,10 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer resp.Body.Close()
 
+		if resp.Request == nil {
+			resp.Request = proxyReq
+		}
+
 		// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
 		// 只为非 SSE 响应记录 HAR 条目
 		if !isServerSentEvent(resp) && s.HarLogger.IsEnabled() {
@@ -237,6 +241,10 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.Request == nil {
+		resp.Request = proxyReq
+	}
 
 	// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
 	// 只为非 SSE 响应记录 HAR 条目
@@ -1339,6 +1347,10 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer resp.Body.Close()
 
+		if resp.Request == nil {
+			resp.Request = outReq
+		}
+
 		// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
 		// 只为非 SSE 响应记录 HAR 条目
 		if !isServerSentEvent(resp) {
@@ -1410,6 +1422,10 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.Request == nil {
+		resp.Request = outReq
+	}
 
 	// Log to HAR - 但对于SSE响应，我们需要特殊处理
 	if h.proxy.HarLogger.IsEnabled() {
