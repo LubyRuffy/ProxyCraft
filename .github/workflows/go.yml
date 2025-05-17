@@ -26,3 +26,11 @@ jobs:
 
     - name: Test
       run: go test -v ./...
+
+    - name: "Create release on GitHub"
+      uses: goreleaser/goreleaser-action@v3
+      with:
+        args: "release --clean"
+        version: latest
+      env:
+        GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
