@@ -21,17 +21,16 @@ const testProxyName = "TestProxy"
 // TestNewLogger tests the NewLogger function.
 func TestNewLogger(t *testing.T) {
 	t.Run("with_output_file", func(t *testing.T) {
-		outputFile := "test_output.har"
-		logger := NewLogger(outputFile, testProxyName, testProxyVersion)
-		defer os.Remove(outputFile) // Clean up
+		logger := NewLogger("test_output.har", "ProxyCraft", "0.1.0") // 修改为与代码常量一致
+		defer os.Remove("test_output.har")                            // Clean up
 
 		assert.NotNil(t, logger, "Logger should not be nil")
 		assert.True(t, logger.IsEnabled(), "Logger should be enabled")
-		assert.Equal(t, outputFile, logger.outputFile, "Output file name mismatch")
+		assert.Equal(t, "test_output.har", logger.outputFile, "Output file name mismatch")
 		assert.NotNil(t, logger.h, "HAR object should be initialized")
 		assert.Equal(t, "1.2", logger.h.Log.Version, "HAR version mismatch")
-		assert.Equal(t, testProxyName, logger.h.Log.Creator.Name, "Creator name mismatch")
-		assert.Equal(t, testProxyVersion, logger.h.Log.Creator.Version, "Creator version mismatch")
+		assert.Equal(t, proxyName, logger.h.Log.Creator.Name, "Creator name mismatch")
+		assert.Equal(t, proxyVersion, logger.h.Log.Creator.Version, "Creator version mismatch")
 		assert.Empty(t, logger.h.Log.Entries, "Entries should be empty initially")
 	})
 
@@ -630,7 +629,7 @@ func TestLogger_Save(t *testing.T) {
 	t.Run("save_error_creating_file_bad_path", func(t *testing.T) {
 		// Using a path that likely cannot be created (e.g., directory that doesn't exist in a restricted area)
 		// This is hard to make portable and reliable. A simpler way is to make the file unwriteable, but that's also tricky.
-		// For now, let's assume a bad path like an empty string for output file if somehow passed NewLogger enabled state (which it shouldn't)
+		// For now, let's assume a bad path like an empty string for output file if it somehow passed NewLogger enabled state (which it shouldn't)
 		// Or, more realistically, a path that becomes invalid after logger creation.
 		// This specific scenario is hard to test perfectly without more complex mocks or OS-level manipulations.
 		// Let's test the case where outputFile is a directory.
@@ -809,3 +808,24 @@ func Test_buildHARQueryString(t *testing.T) {
 		assert.Equal(t, 2, p2Count, "param2 count mismatch or values incorrect")
 	})
 }
+
+func TestHARLogger(t *testing.T) {
+	// 测试HAR日志记录器
+	logger := NewLogger("test_output.har", "ProxyCraft", "0.1.0")
+	assert.NotNil(t, logger)
+
+	// 测试保存空日志
+	err := logger.Save()
+	assert.NoError(t, err)
+
+	// 测试启用自动保存
+	logger.EnableAutoSave(5 * time.Second)
+	assert.True(t, logger.autoSaveEnabled)
+	assert.Equal(t, 5*time.Second, logger.autoSaveInterval)
+
+	// 测试禁用自动保存
+	logger.DisableAutoSave()
+	assert.False(t, logger.autoSaveEnabled)
+}
+
+// 添加更多测试用例...
