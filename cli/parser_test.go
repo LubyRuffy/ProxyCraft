@@ -2,9 +2,10 @@ package cli
 
 import (
 	"flag" // 修复缺失的导入
-	"github.com/stretchr/testify/assert"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestParseFlags(t *testing.T) {

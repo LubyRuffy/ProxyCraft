@@ -274,8 +274,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 对于 SSE 响应，不在这里记录 HAR 条目，而是在 handleSSE 中完成后记录
-		// 删除之前添加的 HAR 条目（如果有的话）
-		// 注意：这里没有实际删除功能，因为 Logger 没有提供删除条目的方法
 
 		// Handle SSE response
 		err := s.handleSSE(w, resp)
@@ -780,7 +778,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 
 		if err != nil {
 			log.Printf("[MITM for %s] Error sending request to target %s: %v", r.Host, targetURL.String(), err)
-			// Log to HAR even if there's an error
+			// Log to HAR even if there's an error sending the request (resp might be nil)
 			s.logToHAR(tunneledReq, nil, startTime, timeTaken, false)
 			break
 		}
