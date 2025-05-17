@@ -20,21 +20,23 @@ import (
 
 // Server struct will hold proxy server configuration and state
 type Server struct {
-	Addr        string
-	CertManager *certs.Manager
-	Verbose     bool
-	HarLogger   *harlogger.Logger // Added for HAR logging
-	EnableMITM  bool              // 是否启用MITM模式，默认为false表示直接隧道模式
+	Addr          string
+	CertManager   *certs.Manager
+	Verbose       bool
+	HarLogger     *harlogger.Logger // Added for HAR logging
+	EnableMITM    bool              // 是否启用MITM模式，默认为false表示直接隧道模式
+	UpstreamProxy *url.URL          // 上层代理服务器URL，如果为nil则直接连接
 }
 
 // NewServer creates a new proxy server instance
-func NewServer(addr string, certManager *certs.Manager, verbose bool, harLogger *harlogger.Logger, enableMITM bool) *Server {
+func NewServer(addr string, certManager *certs.Manager, verbose bool, harLogger *harlogger.Logger, enableMITM bool, upstreamProxy *url.URL) *Server {
 	return &Server{
-		Addr:        addr,
-		CertManager: certManager,
-		Verbose:     verbose,
-		HarLogger:   harLogger,
-		EnableMITM:  enableMITM,
+		Addr:          addr,
+		CertManager:   certManager,
+		Verbose:       verbose,
+		HarLogger:     harLogger,
+		EnableMITM:    enableMITM,
+		UpstreamProxy: upstreamProxy,
 	}
 }
 
@@ -118,6 +120,14 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		DisableCompression: true,
 		// Override the RoundTrip method to intercept responses early
 		ResponseHeaderTimeout: 5 * time.Second, // Timeout for receiving response headers
+	}
+
+	// 如果配置了上层代理，设置代理URL
+	if s.UpstreamProxy != nil {
+		if s.Verbose {
+			log.Printf("[HTTP] Using upstream proxy: %s", s.UpstreamProxy.String())
+		}
+		baseTransport.Proxy = http.ProxyURL(s.UpstreamProxy)
 	}
 
 	// Configure HTTP/2 support
@@ -299,15 +309,6 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 
 	// 直接隧道模式 - 不使用MITM
 	if !s.EnableMITM {
-		// 连接到目标服务器
-		targetConn, err := net.DialTimeout("tcp", hostPort, 10*time.Second)
-		if err != nil {
-			log.Printf("Error connecting to target server %s: %v", hostPort, err)
-			http.Error(w, fmt.Sprintf("无法连接到目标服务器: %v", err), http.StatusBadGateway)
-			return
-		}
-		defer targetConn.Close()
-
 		// 劫持客户端连接
 		hijacker, ok := w.(http.Hijacker)
 		if !ok {
@@ -323,7 +324,67 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		}
 		defer clientConn.Close()
 
-		// 发送200 OK响应
+		var targetConn net.Conn
+
+		// 检查是否使用上层代理
+		if s.UpstreamProxy != nil && s.UpstreamProxy.Scheme != "" {
+			// 通过上层代理连接
+			if s.Verbose {
+				log.Printf("[HTTPS] Using upstream proxy %s for connection to %s", s.UpstreamProxy.String(), hostPort)
+			}
+
+			// 连接到上层代理
+			proxyConn, err := net.DialTimeout("tcp", s.UpstreamProxy.Host, 10*time.Second)
+			if err != nil {
+				log.Printf("Error connecting to upstream proxy %s: %v", s.UpstreamProxy.Host, err)
+				http.Error(w, fmt.Sprintf("无法连接到上层代理服务器: %v", err), http.StatusBadGateway)
+				return
+			}
+
+			// 发送CONNECT请求到上层代理
+			connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", hostPort, hostPort)
+			if _, err := proxyConn.Write([]byte(connectReq)); err != nil {
+				log.Printf("Error sending CONNECT request to upstream proxy: %v", err)
+				proxyConn.Close()
+				http.Error(w, fmt.Sprintf("无法发送CONNECT请求到上层代理: %v", err), http.StatusBadGateway)
+				return
+			}
+
+			// 读取上层代理的响应
+			bufReader := bufio.NewReader(proxyConn)
+			resp, err := http.ReadResponse(bufReader, &http.Request{Method: "CONNECT"})
+			if err != nil {
+				log.Printf("Error reading response from upstream proxy: %v", err)
+				proxyConn.Close()
+				http.Error(w, fmt.Sprintf("无法读取上层代理响应: %v", err), http.StatusBadGateway)
+				return
+			}
+
+			// 检查上层代理的响应状态
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("Upstream proxy responded with non-200 status: %d %s", resp.StatusCode, resp.Status)
+				proxyConn.Close()
+				http.Error(w, fmt.Sprintf("上层代理返回错误状态: %d %s", resp.StatusCode, resp.Status), http.StatusBadGateway)
+				return
+			}
+
+			// 使用上层代理连接作为目标连接
+			targetConn = proxyConn
+			if s.Verbose {
+				log.Printf("[HTTPS] Successfully established connection to %s via upstream proxy", hostPort)
+			}
+		} else {
+			// 直接连接到目标服务器
+			targetConn, err = net.DialTimeout("tcp", hostPort, 10*time.Second)
+			if err != nil {
+				log.Printf("Error connecting to target server %s: %v", hostPort, err)
+				http.Error(w, fmt.Sprintf("无法连接到目标服务器: %v", err), http.StatusBadGateway)
+				return
+			}
+		}
+		defer targetConn.Close()
+
+		// 发送200 OK响应给客户端
 		responseStr := "HTTP/1.1 200 Connection Established\r\n\r\n"
 		if _, err := clientWriter.WriteString(responseStr); err != nil {
 			log.Printf("Error writing 200 response: %v", err)
@@ -335,7 +396,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 创建双向数据转发
-		log.Printf("Establishing direct tunnel to %s", hostPort)
+		log.Printf("Establishing tunnel to %s", hostPort)
 		go func() {
 			_, _ = io.Copy(targetConn, clientConn)
 		}()
@@ -523,6 +584,14 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			ExpectContinueTimeout: 1 * time.Second,
 			// Don't automatically decompress responses to allow proper SSE handling
 			DisableCompression: true,
+		}
+
+		// 如果配置了上层代理，设置代理URL
+		if s.UpstreamProxy != nil {
+			if s.Verbose {
+				log.Printf("[MITM for %s] Using upstream proxy: %s", r.Host, s.UpstreamProxy.String())
+			}
+			transport.Proxy = http.ProxyURL(s.UpstreamProxy)
 		}
 
 		// Configure HTTP/2 support for the transport
@@ -1061,6 +1130,14 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ExpectContinueTimeout: 1 * time.Second,
 		// Don't automatically decompress responses to allow proper SSE handling
 		DisableCompression: true,
+	}
+
+	// 如果配置了上层代理，设置代理URL
+	if h.proxy.UpstreamProxy != nil {
+		if h.proxy.Verbose {
+			log.Printf("[HTTP/2] Using upstream proxy: %s", h.proxy.UpstreamProxy.String())
+		}
+		transport.Proxy = http.ProxyURL(h.proxy.UpstreamProxy)
 	}
 
 	// Configure HTTP/2 support for the transport

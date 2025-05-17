@@ -53,6 +53,9 @@ go build -o proxycraft
 
 # 导出 CA 证书（用于浏览器信任）
 ./proxycraft -export-ca proxycraft-ca.pem
+
+# 使用上层代理
+./proxycraft -upstream-proxy http://corporate-proxy.example.com:8080
 ```
 
 ### 配置浏览器
@@ -84,6 +87,7 @@ curl --cacert proxycraft-ca.pem --proxy http://127.0.0.1:8080 https://example.co
 -use-ca string           Use custom root CA certificate from CERT_PATH
 -use-key string          Use custom root CA private key from KEY_PATH
 -mitm                    Enable MITM mode for HTTPS traffic inspection
+-upstream-proxy string   Upstream proxy URL (e.g., "http://proxy.example.com:8080")
 -h, -help                Show this help message and exit
 ```
 
@@ -126,6 +130,28 @@ ProxyCraft 在首次运行时会自动生成自签名根 CA 证书。您可以�
 
 - 使用 `-export-ca` 导出证书以导入到浏览器或系统中
 - 使用 `-use-ca` 和 `-use-key` 指定自定义的根 CA 证书和私钥
+
+### 上层代理支持
+
+ProxyCraft 支持通过上层代理转发请求，这在以下场景中非常有用：
+
+- 在需要通过公司代理访问互联网的环境中
+- 当您需要通过多个代理链进行访问时
+- 当您需要使用特定的出口 IP 进行测试时
+
+使用 `-upstream-proxy` 参数指定上层代理的 URL，例如：
+
+```bash
+./proxycraft -upstream-proxy http://proxy.example.com:8080
+```
+
+支持的代理协议包括：
+
+- HTTP代理：`http://proxy.example.com:8080`
+- HTTPS代理：`https://proxy.example.com:8443`
+- SOCKS5代理：`socks5://proxy.example.com:1080`
+
+上层代理支持在所有模式下工作，包括直接隧道模式和 MITM 模式。
 
 ## 目标用户
 

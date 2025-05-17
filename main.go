@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -80,8 +81,19 @@ func main() {
 		}()
 	}
 
+	// 解析上层代理URL
+	var upstreamProxyURL *url.URL
+	if cfg.UpstreamProxy != "" {
+		var err error
+		upstreamProxyURL, err = url.Parse(cfg.UpstreamProxy)
+		if err != nil {
+			log.Fatalf("Error parsing upstream proxy URL: %v", err)
+		}
+		log.Printf("Using upstream proxy: %s", upstreamProxyURL.String())
+	}
+
 	// Initialize and start the proxy server
-	proxyServer := proxy.NewServer(listenAddr, certManager, cfg.Verbose, harLogger, cfg.EnableMITM)
+	proxyServer := proxy.NewServer(listenAddr, certManager, cfg.Verbose, harLogger, cfg.EnableMITM, upstreamProxyURL)
 
 	// Log MITM mode status
 	if cfg.EnableMITM {
