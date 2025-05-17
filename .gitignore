@@ -11,3 +11,5 @@ harlogger/test_output.har
 proxy/proxycraft-ca-key.pem
 .idea/CopilotSideBarWebPersist.xml
 proxy/proxycraft-ca.pem
+proxy/server.go.bak
+proxy/server.go.original
