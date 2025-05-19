@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/LubyRuffy/ProxyCraft/proxy/handlers"
 	"github.com/gin-gonic/gin"
@@ -26,6 +28,23 @@ type Server struct {
 	StaticDir       string               // 静态文件目录
 	Dist            embed.FS             // 嵌入的静态文件
 	WebSocketServer *WebSocketServer     // WebSocket服务器
+}
+
+// CORSMiddleware 实现CORS中间件
+func CORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Accept, Origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+
+		c.Next()
+	}
 }
 
 // NewServer 创建一个新的API服务器
@@ -49,6 +68,9 @@ func NewServer(webHandler *handlers.WebHandler, port int) *Server {
 			log.Printf("Warning: Static directory %s does not exist", server.StaticDir)
 		}
 	}
+
+	// 应用CORS中间件
+	server.Router.Use(CORSMiddleware())
 
 	// 初始化WebSocket服务器
 	wsServer, err := NewWebSocketServer(webHandler)
@@ -85,8 +107,17 @@ func (s *Server) setupRoutes() {
 		api.GET("/traffic/:id/response", s.getResponseDetails)
 	}
 
-	// WebSocket服务路由
+	// WebSocket服务路由 - 添加额外的CORS处理
 	if s.WebSocketServer != nil {
+		// 为socket.io路由添加CORS预检请求处理
+		s.Router.OPTIONS("/socket.io/*any", func(c *gin.Context) {
+			c.Header("Access-Control-Allow-Origin", "*")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept")
+			c.Header("Access-Control-Allow-Credentials", "true")
+			c.Status(http.StatusOK)
+		})
+
 		s.Router.GET("/socket.io/*any", gin.WrapH(s.WebSocketServer.GetHandler()))
 		s.Router.POST("/socket.io/*any", gin.WrapH(s.WebSocketServer.GetHandler()))
 	}
@@ -176,15 +207,60 @@ func (s *Server) Start() error {
 	}
 
 	log.Printf("Web UI available at %s", s.UIAddr)
+	log.Printf("WebSocket服务可连接，URL: %s/socket.io", s.UIAddr)
 	return s.Router.Run(fmt.Sprintf(":%d", s.UIPort))
 }
 
 // getTrafficEntries 返回所有流量条目
 func (s *Server) getTrafficEntries(c *gin.Context) {
-	entries := s.WebHandler.GetEntries()
-	c.JSON(http.StatusOK, gin.H{
-		"entries": entries,
-	})
+	log.Printf("API: 开始处理获取流量条目HTTP请求...")
+
+	// 创建一个带超时的上下文，增加超时时间到10秒
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// 创建一个通道用于接收结果
+	entriesChan := make(chan []*handlers.TrafficEntry, 1)
+	errChan := make(chan error, 1)
+
+	// 在goroutine中获取流量条目，避免阻塞
+	startTime := time.Now()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("API: 获取流量条目时发生panic: %v", r)
+				errChan <- fmt.Errorf("internal server error: %v", r)
+			}
+		}()
+
+		log.Printf("API: 开始调用WebHandler.GetEntries...")
+		entries := s.WebHandler.GetEntries()
+		elapsed := time.Since(startTime)
+		log.Printf("API: WebHandler.GetEntries调用完成，耗时: %v，获取到 %d 条流量记录", elapsed, len(entries))
+		entriesChan <- entries
+	}()
+
+	// 等待结果或超时
+	select {
+	case entries := <-entriesChan:
+		elapsed := time.Since(startTime)
+		log.Printf("API: 正在返回 %d 条流量记录，总耗时: %v", len(entries), elapsed)
+		c.JSON(http.StatusOK, gin.H{
+			"entries": entries,
+		})
+	case err := <-errChan:
+		elapsed := time.Since(startTime)
+		log.Printf("API: 获取流量条目时出错: %v，耗时: %v", err, elapsed)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+	case <-ctx.Done():
+		elapsed := time.Since(startTime)
+		log.Printf("API: 获取流量条目请求超时，耗时: %v", elapsed)
+		c.JSON(http.StatusRequestTimeout, gin.H{
+			"error": "Request timed out after 10 seconds",
+		})
+	}
 }
 
 // getTrafficEntry 返回特定流量条目
@@ -213,11 +289,36 @@ func (s *Server) clearTrafficEntries(c *gin.Context) {
 // getRequestDetails 获取请求详情
 func (s *Server) getRequestDetails(c *gin.Context) {
 	id := c.Param("id")
-	entry := s.WebHandler.GetEntry(id)
+	log.Printf("开始获取请求详情，ID: %s", id)
 
-	if entry == nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Entry not found",
+	// 创建一个带超时的上下文
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	// 创建一个通道用于接收结果
+	entryChan := make(chan *handlers.TrafficEntry, 1)
+
+	// 在goroutine中获取条目，避免阻塞
+	go func() {
+		entry := s.WebHandler.GetEntry(id)
+		entryChan <- entry
+	}()
+
+	// 等待结果或超时
+	var entry *handlers.TrafficEntry
+	select {
+	case entry = <-entryChan:
+		if entry == nil {
+			log.Printf("未找到条目, ID: %s", id)
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Entry not found",
+			})
+			return
+		}
+	case <-ctx.Done():
+		log.Printf("获取条目请求超时, ID: %s", id)
+		c.JSON(http.StatusRequestTimeout, gin.H{
+			"error": "Request timed out",
 		})
 		return
 	}
@@ -232,7 +333,9 @@ func (s *Server) getRequestDetails(c *gin.Context) {
 	var body interface{}
 
 	contentType := entry.RequestHeaders.Get("Content-Type")
-	if strings.Contains(contentType, "application/json") {
+	if len(entry.RequestBody) > 1024*1024 { // 如果请求体大于1MB
+		body = fmt.Sprintf("<Large request body, %d bytes>", len(entry.RequestBody))
+	} else if strings.Contains(contentType, "application/json") {
 		// 尝试解析JSON
 		if err := json.Unmarshal(entry.RequestBody, &body); err != nil {
 			body = string(entry.RequestBody)
@@ -247,6 +350,7 @@ func (s *Server) getRequestDetails(c *gin.Context) {
 		body = fmt.Sprintf("<Binary data, %d bytes>", len(entry.RequestBody))
 	}
 
+	log.Printf("已获取请求详情，ID: %s，内容大小: %d bytes", id, len(entry.RequestBody))
 	c.JSON(http.StatusOK, gin.H{
 		"headers": headers,
 		"body":    body,
@@ -256,11 +360,36 @@ func (s *Server) getRequestDetails(c *gin.Context) {
 // getResponseDetails 获取响应详情
 func (s *Server) getResponseDetails(c *gin.Context) {
 	id := c.Param("id")
-	entry := s.WebHandler.GetEntry(id)
+	log.Printf("开始获取响应详情，ID: %s", id)
 
-	if entry == nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Entry not found",
+	// 创建一个带超时的上下文
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	// 创建一个通道用于接收结果
+	entryChan := make(chan *handlers.TrafficEntry, 1)
+
+	// 在goroutine中获取条目，避免阻塞
+	go func() {
+		entry := s.WebHandler.GetEntry(id)
+		entryChan <- entry
+	}()
+
+	// 等待结果或超时
+	var entry *handlers.TrafficEntry
+	select {
+	case entry = <-entryChan:
+		if entry == nil {
+			log.Printf("未找到条目, ID: %s", id)
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Entry not found",
+			})
+			return
+		}
+	case <-ctx.Done():
+		log.Printf("获取条目请求超时, ID: %s", id)
+		c.JSON(http.StatusRequestTimeout, gin.H{
+			"error": "Request timed out",
 		})
 		return
 	}
@@ -275,7 +404,9 @@ func (s *Server) getResponseDetails(c *gin.Context) {
 	var body interface{}
 
 	contentType := entry.ResponseHeaders.Get("Content-Type")
-	if strings.Contains(contentType, "application/json") {
+	if len(entry.ResponseBody) > 1024*1024 { // 如果响应体大于1MB
+		body = fmt.Sprintf("<Large response body, %d bytes>", len(entry.ResponseBody))
+	} else if strings.Contains(contentType, "application/json") {
 		// 尝试解析JSON
 		if err := json.Unmarshal(entry.ResponseBody, &body); err != nil {
 			body = string(entry.ResponseBody)
@@ -290,6 +421,7 @@ func (s *Server) getResponseDetails(c *gin.Context) {
 		body = fmt.Sprintf("<Binary data, %d bytes>", len(entry.ResponseBody))
 	}
 
+	log.Printf("已获取响应详情，ID: %s，内容大小: %d bytes", id, len(entry.ResponseBody))
 	c.JSON(http.StatusOK, gin.H{
 		"headers": headers,
 		"body":    body,

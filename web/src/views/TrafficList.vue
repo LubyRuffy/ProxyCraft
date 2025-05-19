@@ -8,6 +8,9 @@
       <el-button type="danger" @click="confirmClear" :loading="loading" size="small">
         清空
       </el-button>
+      <el-button type="warning" @click="reconnectWebSocket" :loading="reconnecting" size="small">
+        重新连接
+      </el-button>
       <div class="connection-status">
         <el-tag v-if="isConnected" type="success" size="small" effect="plain">
           WebSocket已连接 ({{ transportMode }})
@@ -95,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, onUnmounted } from 'vue';
+import { computed, onMounted, ref, onUnmounted, watch } from 'vue';
 import { useStore } from 'vuex';
 import { ElMessageBox } from 'element-plus';
 import RequestResponsePanel from '../components/RequestResponsePanel.vue';
@@ -111,6 +114,8 @@ const detailPanelHeight = ref(300); // 初始高度
 const isResizing = ref(false);
 const minHeight = 100; // 最小高度
 const maxHeight = 600; // 最大高度
+const reconnecting = ref(false); // 是否正在重连
+const connectionCheckTimer = ref<number | null>(null); // 连接检查定时器
 
 // 从 store 中获取状态
 const trafficEntries = computed(() => store.getters.allTrafficEntries);
@@ -158,9 +163,33 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', stopResize);
 });
 
+// 重新连接WebSocket
+const reconnectWebSocket = () => {
+  reconnecting.value = true;
+  
+  // 先断开当前连接
+  store.commit('setConnected', false);
+  websocketService.disconnect();
+  
+  // 延迟一秒后重新连接，确保前一个连接完全关闭
+  setTimeout(() => {
+    console.log('尝试重新建立WebSocket连接...');
+    websocketService.reconnect();
+    
+    // 设置5秒超时，如果还没有连接成功就显示错误
+    setTimeout(() => {
+      if (!websocketService.isConnected()) {
+        store.commit('setError', '重连失败，请刷新页面再试');
+      }
+      reconnecting.value = false;
+    }, 5000);
+  }, 1000);
+};
+
 // 初始化WebSocket并加载数据
 onMounted(() => {
   // 初始化WebSocket连接
+  console.log('初始化WebSocket连接...');
   store.dispatch('initWebSocket');
   
   // 初始加载数据
@@ -169,10 +198,21 @@ onMounted(() => {
   // 设置WebSocket响应详情处理器
   setupWebSocketDetailHandlers();
   
-  // 设置一个定时器来更新传输模式信息
-  setInterval(() => {
+  // 设置定时器检查连接状态并更新传输模式
+  connectionCheckTimer.value = window.setInterval(() => {
     transportMode.value = websocketService.getTransport();
-  }, 1000);
+    
+    // 如果连接状态与store中存储的状态不一致，更新状态
+    const currentConnected = websocketService.isConnected();
+    if (currentConnected !== isConnected.value) {
+      store.commit('setConnected', currentConnected);
+      
+      // 如果连接已恢复，尝试重新获取数据
+      if (currentConnected && !isConnected.value) {
+        refreshData();
+      }
+    }
+  }, 2000) as unknown as number;
 });
 
 // SSE刷新定时器
@@ -212,8 +252,15 @@ const stopSSERefresh = () => {
 onUnmounted(() => {
   document.removeEventListener('mousemove', handleMouseMove);
   document.removeEventListener('mouseup', stopResize);
+  
   // 清除SSE刷新定时器
   stopSSERefresh();
+  
+  // 清除连接检查定时器
+  if (connectionCheckTimer.value !== null) {
+    clearInterval(connectionCheckTimer.value);
+    connectionCheckTimer.value = null;
+  }
 });
 
 // 设置WebSocket处理器以响应详情
@@ -237,9 +284,45 @@ const setupWebSocketDetailHandlers = () => {
   });
 };
 
+// 监视连接状态变化
+watch(() => isConnected.value, (newValue) => {
+  if (newValue) {
+    // 连接成功，清除错误提示
+    store.commit('setError', null);
+    
+    // 如果页面上没有数据，刷新数据
+    if (trafficEntries.value.length === 0) {
+      refreshData();
+    }
+  } else {
+    // 连接断开，设置错误提示，除非是主动断开
+    if (!reconnecting.value) {
+      store.commit('setError', 'WebSocket连接已断开，正在尝试重连...');
+    }
+  }
+});
+
 // 刷新数据
 const refreshData = () => {
-  store.dispatch('fetchTrafficEntries');
+  if (websocketService.isConnected()) {
+    store.dispatch('fetchTrafficEntries');
+  } else {
+    // 如果未连接，先尝试重新连接
+    console.log('WebSocket未连接，尝试重新连接后再获取数据');
+    store.commit('setLoading', true);
+    
+    // 给连接一些时间
+    setTimeout(() => {
+      // 如果连接成功，获取数据
+      if (websocketService.isConnected()) {
+        store.dispatch('fetchTrafficEntries');
+      } else {
+        // 连接仍然失败，显示错误
+        store.commit('setError', 'WebSocket连接失败，无法获取数据');
+        store.commit('setLoading', false);
+      }
+    }, 2000);
+  }
 };
 
 // 清空数据

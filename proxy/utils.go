@@ -156,6 +156,7 @@ func (t *earlySSEDetector) RoundTrip(req *http.Request) (*http.Response, error) 
 				resp.Header.Set("Content-Type", "text/event-stream")
 				resp.Header.Set("Cache-Control", "no-cache")
 				resp.Header.Set("Connection", "keep-alive")
+				resp.Header.Set("Transfer-Encoding", "chunked")
 
 				// 不再创建管道和新响应体，只标记响应是SSE
 				return resp, nil
