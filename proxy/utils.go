@@ -41,6 +41,66 @@ func (s *Server) logToHAR(req *http.Request, resp *http.Response, startTime time
 	}
 }
 
+// createRequestContext 创建一个请求上下文
+func (s *Server) createRequestContext(req *http.Request, targetURL string, startTime time.Time, isHTTPS bool) *RequestContext {
+	return &RequestContext{
+		Request:   req,
+		StartTime: startTime,
+		IsSSE:     isSSERequest(req),
+		IsHTTPS:   isHTTPS,
+		TargetURL: targetURL,
+		UserData:  make(map[string]interface{}),
+	}
+}
+
+// createResponseContext 创建一个响应上下文
+func (s *Server) createResponseContext(reqCtx *RequestContext, resp *http.Response, timeTaken time.Duration) *ResponseContext {
+	return &ResponseContext{
+		ReqCtx:    reqCtx,
+		Response:  resp,
+		TimeTaken: timeTaken,
+		IsSSE:     isServerSentEvent(resp),
+		UserData:  make(map[string]interface{}),
+	}
+}
+
+// notifyRequest 通知请求事件
+func (s *Server) notifyRequest(ctx *RequestContext) *http.Request {
+	if s.EventHandler != nil {
+		return s.EventHandler.OnRequest(ctx)
+	}
+	return ctx.Request
+}
+
+// notifyResponse 通知响应事件
+func (s *Server) notifyResponse(ctx *ResponseContext) *http.Response {
+	if s.EventHandler != nil {
+		return s.EventHandler.OnResponse(ctx)
+	}
+	return ctx.Response
+}
+
+// notifyError 通知错误事件
+func (s *Server) notifyError(err error, reqCtx *RequestContext) {
+	if s.EventHandler != nil {
+		s.EventHandler.OnError(err, reqCtx)
+	}
+}
+
+// notifyTunnelEstablished 通知隧道建立事件
+func (s *Server) notifyTunnelEstablished(host string, isIntercepted bool) {
+	if s.EventHandler != nil {
+		s.EventHandler.OnTunnelEstablished(host, isIntercepted)
+	}
+}
+
+// notifySSE 通知SSE事件
+func (s *Server) notifySSE(event string, ctx *ResponseContext) {
+	if s.EventHandler != nil {
+		s.EventHandler.OnSSE(event, ctx)
+	}
+}
+
 // headerInterceptingTransport 是一个自定义的 http.RoundTripper，它可以在接收到响应头后立即拦截响应
 type headerInterceptingTransport struct {
 	base     http.RoundTripper

@@ -13,6 +13,7 @@ import (
 	"github.com/LubyRuffy/ProxyCraft/cli"
 	"github.com/LubyRuffy/ProxyCraft/harlogger" // Added for HAR logging
 	"github.com/LubyRuffy/ProxyCraft/proxy"
+	"github.com/LubyRuffy/ProxyCraft/proxy/handlers"
 )
 
 const appName = "ProxyCraft CLI"
@@ -92,8 +93,24 @@ func main() {
 		log.Printf("Using upstream proxy: %s", upstreamProxyURL.String())
 	}
 
-	// Initialize and start the proxy server
-	proxyServer := proxy.NewServer(listenAddr, certManager, cfg.Verbose, harLogger, cfg.EnableMITM, upstreamProxyURL, cfg.DumpTraffic)
+	// 创建命令行事件处理器
+	cliHandler := handlers.NewCLIHandler(cfg.Verbose, cfg.DumpTraffic)
+	statsReporter := handlers.NewStatsReporter(cliHandler, 10*time.Second)
+
+	// 创建服务器配置
+	serverConfig := proxy.ServerConfig{
+		Addr:          listenAddr,
+		CertManager:   certManager,
+		Verbose:       cfg.Verbose,
+		HarLogger:     harLogger,
+		EnableMITM:    cfg.EnableMITM,
+		UpstreamProxy: upstreamProxyURL,
+		DumpTraffic:   cfg.DumpTraffic,
+		EventHandler:  cliHandler,
+	}
+
+	// 初始化并启动代理服务器
+	proxyServer := proxy.NewServerWithConfig(serverConfig)
 
 	// 如果启用了流量输出
 	if cfg.DumpTraffic {
@@ -116,6 +133,9 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// 启动统计报告
+	statsReporter.Start()
+
 	// Start the proxy server in a goroutine
 	go func() {
 		log.Printf("Starting proxy server on %s", listenAddr)
@@ -127,5 +147,9 @@ func main() {
 	// Wait for termination signal
 	sig := <-sigChan
 	log.Printf("Received signal %v, shutting down...", sig)
+
+	// 输出最终统计报告
+	statsReporter.Stop()
+
 	// The deferred harLogger.Save() will be called when main() exits
 }
