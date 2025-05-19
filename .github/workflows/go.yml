@@ -21,6 +21,12 @@ jobs:
       with:
         go-version: '1.24.2'
 
+    - name: Use Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+    - run: cd web && npm install
+
     - name: Build
       run: go build -v ./...
 
