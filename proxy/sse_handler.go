@@ -88,6 +88,24 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 		flusher: flusher,
 	}
 
+	// 创建请求上下文，如果请求有效
+	var reqCtx *RequestContext
+	var respCtx *ResponseContext
+	if resp.Request != nil {
+		// 获取目标 URL
+		targetURL := ""
+		if resp.Request.URL != nil {
+			targetURL = resp.Request.URL.String()
+		}
+
+		reqCtx = s.createRequestContext(resp.Request, targetURL, startTime, false)
+		reqCtx.IsSSE = true
+
+		// 创建响应上下文
+		respCtx = s.createResponseContext(reqCtx, resp, 0) // 在这里 timeTaken 还未计算
+		respCtx.IsSSE = true
+	}
+
 	// Read and forward SSE events
 	reader := bufio.NewReader(resp.Body)
 
@@ -116,12 +134,20 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 			if err == io.EOF {
 				break
 			}
+			// 通知错误
+			if reqCtx != nil {
+				s.notifyError(fmt.Errorf("error reading SSE stream: %v", err), reqCtx)
+			}
 			return fmt.Errorf("error reading SSE stream: %v", err)
 		}
 
 		// 写入 tee，它会同时写入客户端和缓冲区
 		_, err = tee.Write(line)
 		if err != nil {
+			// 通知错误
+			if reqCtx != nil {
+				s.notifyError(fmt.Errorf("error writing SSE data: %v", err), reqCtx)
+			}
 			return fmt.Errorf("error writing SSE data: %v", err)
 		}
 
@@ -133,12 +159,20 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 		if s.DumpTraffic && lineStr != "" {
 			fmt.Printf("%s %s\n", dumpPrefix, lineStr)
 		}
+
+		// 通知 SSE 事件处理
+		if respCtx != nil && lineStr != "" {
+			s.notifySSE(lineStr, respCtx)
+		}
 	}
 
 	// 流结束后，记录 HAR 条目
 	if s.HarLogger.IsEnabled() {
 		// 计算流处理时间
 		timeTaken := time.Since(startTime)
+		if respCtx != nil {
+			respCtx.TimeTaken = timeTaken
+		}
 
 		// 创建一个新的响应，包含收集到的完整数据
 		newResp := &http.Response{

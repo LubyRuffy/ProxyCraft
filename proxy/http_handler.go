@@ -39,10 +39,21 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[HTTP] Forwarding request to: %s %s", r.Method, targetURL)
 	}
 
+	// 创建请求上下文
+	startTime := time.Now()
+	reqCtx := s.createRequestContext(r, targetURL, startTime, false)
+
+	// 通知请求事件
+	modifiedReq := s.notifyRequest(reqCtx)
+	if modifiedReq != r && modifiedReq != nil {
+		r = modifiedReq
+	}
+
 	proxyReq, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
 		log.Printf("[HTTP] Error creating proxy request for %s: %v", targetURL, err)
 		http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
+		s.notifyError(err, reqCtx)
 		return
 	}
 
@@ -54,9 +65,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ensure Host header is set correctly for the target server
 	proxyReq.Host = r.Host
-
-	// Send the request to the target server
-	startTime := time.Now()
 
 	// Check if this might be an SSE request based on patterns and headers
 	potentialSSE := isSSERequest(proxyReq)
@@ -123,12 +131,23 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[HTTP] Error sending request to target server %s: %v", targetURL, err)
 			http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL, err), http.StatusBadGateway)
+			s.notifyError(err, reqCtx)
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.Request == nil {
 			resp.Request = proxyReq
+		}
+
+		// 创建响应上下文
+		respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
+
+		// 通知响应事件
+		modifiedResp := s.notifyResponse(respCtx)
+		if modifiedResp != resp && modifiedResp != nil {
+			resp = modifiedResp
+			respCtx.Response = resp
 		}
 
 		// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
@@ -151,6 +170,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			err := s.handleSSE(w, resp)
 			if err != nil {
 				log.Printf("[SSE] Error handling SSE response: %v", err)
+				s.notifyError(err, reqCtx)
 			}
 			return
 		} else {
@@ -173,6 +193,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			written, err := io.Copy(w, resp.Body)
 			if err != nil {
 				log.Printf("Error copying response body: %v", err)
+				s.notifyError(err, reqCtx)
 			}
 
 			log.Printf("Copied %d bytes for response body from %s", written, targetURL)
@@ -194,12 +215,23 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL, err), http.StatusBadGateway)
 		// Log to HAR even if there's an error sending the request (resp might be nil)
 		s.logToHAR(r, nil, startTime, timeTaken, false)
+		s.notifyError(err, reqCtx)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.Request == nil {
 		resp.Request = proxyReq
+	}
+
+	// 创建响应上下文
+	respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
+
+	// 通知响应事件
+	modifiedResp := s.notifyResponse(respCtx)
+	if modifiedResp != resp && modifiedResp != nil {
+		resp = modifiedResp
+		respCtx.Response = resp
 	}
 
 	// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
@@ -232,6 +264,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		err := s.handleSSE(w, resp)
 		if err != nil {
 			log.Printf("[SSE] Error handling SSE response: %v", err)
+			s.notifyError(err, reqCtx)
 		}
 		return
 	}
@@ -251,6 +284,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	written, err := io.Copy(w, resp.Body)
 	if err != nil {
 		log.Printf("Error copying response body: %v", err)
+		s.notifyError(err, reqCtx)
 		// Don't send http.Error here as headers might have already been written
 	}
 

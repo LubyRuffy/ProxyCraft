@@ -26,6 +26,9 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 
 	// 直接隧道模式 - 不使用MITM
 	if !s.EnableMITM {
+		// 通知隧道建立事件
+		s.notifyTunnelEstablished(hostPort, false)
+
 		// 劫持客户端连接
 		hijacker, ok := w.(http.Hijacker)
 		if !ok {
@@ -122,6 +125,9 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 以下是MITM模式的处理逻辑
+	// 通知隧道建立事件
+	s.notifyTunnelEstablished(hostPort, true)
+
 	// 劫持客户端连接
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {

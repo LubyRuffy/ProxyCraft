@@ -107,8 +107,6 @@ ProxyCraft CLI 是一款轻量级、高性能的命令行代理工具，旨在�
 
 *   **语言选择:**
     *   **Go:** 优秀的网络编程能力、并发处理、编译成单个二进制文件、跨平台。
-    *   **Python:** 拥有成熟的网络库 (如 `mitmproxy` 库, `asyncio`, `httpx`, `h2`)，开发速度快。
-    *   **Rust:** 高性能、内存安全，但学习曲线较陡。
 *   **核心库:**
     *   需要 HTTP/1.1, HTTP/2, TLS, TCP Sockets 的库。
     *   证书生成和管理的库 (如 OpenSSL bindings, Go crypto/tls)。
