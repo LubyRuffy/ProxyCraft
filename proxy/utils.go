@@ -3,12 +3,15 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // logToHAR 是一个辅助方法，用于统一处理 HAR 日志记录
@@ -217,36 +220,93 @@ func (t *earlySSEDetector) RoundTrip(req *http.Request) (*http.Response, error) 
 	return transport.RoundTrip(req)
 }
 
-// isBinaryContent 检查内容是否为二进制
+// isBinaryContent 检查数据是否是二进制格式（而非文本）
 func isBinaryContent(data []byte, contentType string) bool {
-	// 首先检查 Content-Type
-	if strings.HasPrefix(contentType, "image/") ||
-		strings.HasPrefix(contentType, "audio/") ||
-		strings.HasPrefix(contentType, "video/") ||
-		strings.HasPrefix(contentType, "application/octet-stream") ||
-		strings.HasPrefix(contentType, "application/pdf") ||
-		strings.HasPrefix(contentType, "application/zip") ||
-		strings.HasPrefix(contentType, "application/x-gzip") ||
-		strings.Contains(contentType, "compressed") ||
-		strings.Contains(contentType, "binary") {
-		return true
+	// 首先基于Content-Type检查
+	if contentType != "" {
+		contentTypeLower := strings.ToLower(contentType)
+
+		// 移除参数部分
+		if idx := strings.Index(contentTypeLower, ";"); idx >= 0 {
+			contentTypeLower = contentTypeLower[:idx]
+		}
+		contentTypeLower = strings.TrimSpace(contentTypeLower)
+
+		// 已知文本类型，不用检查内容直接返回false
+		if isTextContentType(contentType) {
+			// 如果数据很短，仍需检查内容
+			if len(data) < 32 {
+				// 短数据需要通过实际内容来判断
+			} else {
+				return false
+			}
+		}
+
+		// 已知二进制类型，不用检查内容直接返回true
+		binaryPrefixes := []string{
+			"image/",
+			"audio/",
+			"video/",
+			"application/octet-stream",
+			"application/pdf",
+			"application/zip",
+			"application/x-gzip",
+			"application/x-tar",
+			"application/x-7z-compressed",
+			"application/x-rar-compressed",
+			"application/x-msdownload",
+			"application/vnd.ms-",
+			"application/vnd.openxmlformats-",
+			"font/",
+			"model/",
+		}
+
+		for _, prefix := range binaryPrefixes {
+			if strings.HasPrefix(contentTypeLower, prefix) {
+				return true
+			}
+		}
 	}
 
-	// 如果没有内容，不是二进制
+	// 如果没有数据，无法确定
 	if len(data) == 0 {
 		return false
 	}
 
-	// 检查数据中是否包含太多的非打印字符
-	binaryCount := 0
-	for i := 0; i < len(data) && i < 512; i++ { // 只检查前512字节
-		if data[i] < 7 || (data[i] > 14 && data[i] < 32) || data[i] > 127 {
-			binaryCount++
+	// 检查是否是有效的UTF-8文本
+	if utf8.Valid(data) {
+		// 对于有效的UTF-8文本，还需检查是否包含过多控制字符
+		controlCount := 0
+		totalCount := 0
+		maxSamples := 1024 // 最多检查前1024个字节
+
+		// 计算要检查的字节数
+		bytesToCheck := len(data)
+		if bytesToCheck > maxSamples {
+			bytesToCheck = maxSamples
 		}
+
+		for i := 0; i < bytesToCheck; i++ {
+			b := data[i]
+			totalCount++
+
+			// 控制字符 (ASCII 0-31，除了常见的9=tab, 10=LF, 13=CR)
+			if b < 32 && b != 9 && b != 10 && b != 13 {
+				controlCount++
+			}
+		}
+
+		// 如果控制字符过多，可能是二进制
+		if float64(controlCount)/float64(totalCount) > 0.15 { // 超过15%是控制字符
+			return true
+		}
+
+		// 是有效的UTF-8文本且控制字符不多，判定为文本
+		return false
 	}
 
-	// 如果非打印字符超过一定比例，认为是二进制
-	return float64(binaryCount)/float64(min(len(data), 512)) > 0.1
+	// 不是有效的UTF-8文本，判定为二进制
+	return true
 }
 
 // min 返回两个整数中的较小值
@@ -317,16 +377,20 @@ func (s *Server) dumpRequestBody(req *http.Request) {
 	}
 }
 
-// dumpResponseBody 输出响应头部和体内容
+// dumpResponseBody 输出响应体内容
 func (s *Server) dumpResponseBody(resp *http.Response) {
-	if !s.DumpTraffic || resp == nil {
+	if !s.DumpTraffic {
+		return
+	}
+
+	if resp == nil || resp.Body == nil {
 		return
 	}
 
 	fmt.Println(strings.Repeat("<", 20))
 	defer fmt.Println(strings.Repeat("<", 20))
 
-	// 输出响应状态行
+	// 输出响应行
 	fmt.Printf("%s %s\n", resp.Proto, resp.Status)
 
 	// 输出响应头部
@@ -335,26 +399,53 @@ func (s *Server) dumpResponseBody(resp *http.Response) {
 			fmt.Printf("%s: %s\n", name, value)
 		}
 	}
+	fmt.Println()
 
-	// 读取并恢复响应体
-	bodyBytes, err := readAndRestoreBody(&resp.Body, resp.ContentLength)
+	// 获取内容类型和编码
+	contentType := resp.Header.Get("Content-Type")
+	contentEncoding := resp.Header.Get("Content-Encoding")
+
+	// 创建响应的副本，避免修改原始响应
+	respCopy := *resp
+	respCopy.Body = resp.Body
+
+	// 如果响应体被压缩，先进行解压
+	if contentEncoding != "" {
+		if err := decompressBody(&respCopy); err != nil {
+			log.Printf("解压响应体失败: %v", err)
+			// 添加提示信息
+			fmt.Printf("(压缩内容解析失败，显示原始数据，编码: %s)\n", contentEncoding)
+			// 即使解压失败，仍然继续尝试读取原始内容
+		} else {
+			// 添加提示信息
+			fmt.Printf("(已自动解压 %s 编码的内容)\n", contentEncoding)
+		}
+	}
+
+	// 读取响应体（可能是已解压的内容）
+	bodyBytes, err := readAndRestoreBody(&respCopy.Body, respCopy.ContentLength)
 	if err != nil {
-		log.Printf("Error reading response body for dump: %v\n", err)
+		log.Printf("读取响应体失败: %v", err)
+		return
+	}
+
+	// 恢复原始响应的Body
+	resp.Body = respCopy.Body
+
+	// 没有内容直接返回
+	if len(bodyBytes) == 0 {
+		fmt.Println("(empty body)")
 		return
 	}
 
 	// 检查是否为二进制内容
-	contentType := resp.Header.Get("Content-Type")
 	if isBinaryContent(bodyBytes, contentType) {
-		log.Printf("Binary response body detected (%d bytes), not displaying\n", len(bodyBytes))
-		fmt.Println("\n(binary data)")
+		fmt.Printf("(binary data, %d bytes)\n", len(bodyBytes))
 		return
 	}
 
-	// 输出文本内容
-	if len(bodyBytes) > 0 {
-		fmt.Printf("\n%s\n", string(bodyBytes))
-	}
+	// 显示文本内容
+	fmt.Println(string(bodyBytes))
 }
 
 // logHeader 用于记录HTTP头部信息
@@ -365,4 +456,137 @@ func logHeader(header http.Header, prefix string) {
 			fmt.Printf("  %s: %s\n", k, v)
 		}
 	}
+}
+
+// decompressBody 解压响应体，根据Content-Encoding头部支持gzip, deflate等压缩格式
+func decompressBody(resp *http.Response) error {
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+
+	// 获取内容编码
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	if contentEncoding == "" {
+		return nil // 没有编码，不需要解压
+	}
+
+	// 读取原始响应体
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取原始响应体失败: %w", err)
+	}
+	resp.Body.Close()
+
+	// 如果内容为空，无需解压
+	if len(bodyBytes) == 0 {
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		return nil
+	}
+
+	// 保存原始数据的副本，以便在解压失败时恢复
+	originalBodyBytes := make([]byte, len(bodyBytes))
+	copy(originalBodyBytes, bodyBytes)
+
+	// 解压数据
+	decompressedBytes, err := decompressData(bodyBytes, contentEncoding)
+	if err != nil {
+		// 解压失败，恢复原始响应体
+		resp.Body = io.NopCloser(bytes.NewReader(originalBodyBytes))
+		return fmt.Errorf("解压响应体失败: %w", err)
+	}
+
+	// 更新响应头
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Set("Content-Length", fmt.Sprint(len(decompressedBytes)))
+
+	// 替换响应体
+	resp.Body = io.NopCloser(bytes.NewReader(decompressedBytes))
+	resp.ContentLength = int64(len(decompressedBytes))
+	resp.Uncompressed = true
+
+	// 移除分块传输编码标记
+	resp.TransferEncoding = nil
+
+	return nil
+}
+
+// decompressData 根据指定的编码方式解压数据
+func decompressData(data []byte, encoding string) ([]byte, error) {
+	if len(data) == 0 {
+		return data, nil
+	}
+
+	// 规范化编码名称
+	encoding = strings.ToLower(strings.TrimSpace(encoding))
+
+	// 处理多种编码格式，例如 "gzip, deflate"
+	encodings := strings.Split(encoding, ",")
+	result := data
+
+	// 从最外层的编码开始处理（最右边的编码是最外层的）
+	for i := len(encodings) - 1; i >= 0; i-- {
+		enc := strings.TrimSpace(encodings[i])
+
+		switch enc {
+		case "gzip":
+			// 检查gzip魔术数字
+			if len(result) < 2 || result[0] != 0x1f || result[1] != 0x8b {
+				// 不是有效的gzip数据
+				return nil, fmt.Errorf("无效的gzip数据: 缺少正确的魔术数字")
+			}
+
+			reader, err := gzip.NewReader(bytes.NewReader(result))
+			if err != nil {
+				return nil, fmt.Errorf("创建gzip解压器失败: %w", err)
+			}
+
+			defer reader.Close()
+			decompressed, err := io.ReadAll(reader)
+			if err != nil {
+				return nil, fmt.Errorf("读取gzip解压数据失败: %w", err)
+			}
+
+			result = decompressed
+
+		case "deflate":
+			// deflate没有明确的魔术数字，但我们可以尝试解压
+			reader := flate.NewReader(bytes.NewReader(result))
+			defer reader.Close()
+
+			decompressed, err := io.ReadAll(reader)
+			if err != nil {
+				// 尝试旧式deflate（不带zlib头部）
+				// 某些服务器可能发送的是原始deflate数据而非zlib格式的deflate数据
+				r := flate.NewReader(bytes.NewReader(result))
+				defer r.Close()
+
+				decompressed, err = io.ReadAll(r)
+				if err != nil {
+					return nil, fmt.Errorf("读取deflate解压数据失败: %w", err)
+				}
+			}
+
+			result = decompressed
+
+		case "br":
+			// brotli压缩，目前不支持
+			// 需要添加brotli库支持
+			return nil, fmt.Errorf("不支持的编码方式: %s", enc)
+
+		case "identity":
+			// 不做任何处理
+			continue
+
+		default:
+			// 不支持的编码
+			return nil, fmt.Errorf("不支持的编码方式: %s", enc)
+		}
+
+		// 检查解压后的数据是否为空
+		if len(result) == 0 {
+			return nil, fmt.Errorf("%s解压后数据为空", enc)
+		}
+	}
+
+	return result, nil
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -138,6 +139,26 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if resp.Request == nil {
 			resp.Request = proxyReq
+		}
+
+		// 处理压缩的响应体
+		contentType := resp.Header.Get("Content-Type")
+		contentEncoding := resp.Header.Get("Content-Encoding")
+
+		// 对于文本内容（如JSON，XML，HTML等）且有压缩的情况，解压后再返回
+		if isTextContentType(contentType) && contentEncoding != "" {
+			if s.Verbose {
+				log.Printf("[HTTP] 检测到压缩的文本内容: %s, 编码: %s", contentType, contentEncoding)
+			}
+
+			err := decompressBody(resp)
+			if err != nil {
+				log.Printf("[HTTP] 解压响应体失败: %v", err)
+				s.notifyError(err, reqCtx)
+				// 即使解压失败，仍然尝试返回原始内容
+			} else if s.Verbose {
+				log.Printf("[HTTP] 成功解压响应体")
+			}
 		}
 
 		// 创建响应上下文
@@ -277,6 +298,26 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 处理压缩的响应体
+	contentType := resp.Header.Get("Content-Type")
+	contentEncoding := resp.Header.Get("Content-Encoding")
+
+	// 对于文本内容（如JSON，XML，HTML等）且有压缩的情况，解压后再返回
+	if isTextContentType(contentType) && contentEncoding != "" {
+		if s.Verbose {
+			log.Printf("[HTTP] 检测到压缩的文本内容: %s, 编码: %s", contentType, contentEncoding)
+		}
+
+		err := decompressBody(resp)
+		if err != nil {
+			log.Printf("[HTTP] 解压响应体失败: %v", err)
+			s.notifyError(err, reqCtx)
+			// 即使解压失败，仍然尝试返回原始内容
+		} else if s.Verbose {
+			log.Printf("[HTTP] 成功解压响应体")
+		}
+	}
+
 	// Set the status code
 	w.WriteHeader(resp.StatusCode)
 
@@ -298,4 +339,82 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Copied %d bytes for response body from %s", written, targetURL)
+}
+
+// isTextContentType 判断Content-Type是否为文本类型
+func isTextContentType(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+
+	contentType = strings.ToLower(contentType)
+
+	// 移除可能的字符集和其他参数
+	if idx := strings.Index(contentType, ";"); idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	contentType = strings.TrimSpace(contentType)
+
+	// 直接匹配的类型
+	knownTextTypes := []string{
+		"text/",                             // 所有text/类型
+		"application/json",                  // JSON
+		"application/xml",                   // XML
+		"application/javascript",            // JavaScript
+		"application/x-javascript",          // 旧式JavaScript
+		"application/ecmascript",            // ECMAScript
+		"application/x-www-form-urlencoded", // 表单数据
+		"application/xhtml+xml",             // XHTML
+		"application/atom+xml",              // Atom
+		"application/rss+xml",               // RSS
+		"application/soap+xml",              // SOAP
+		"application/x-yaml",                // YAML
+		"application/yaml",                  // YAML
+		"application/graphql",               // GraphQL
+		"message/rfc822",                    // 邮件格式
+	}
+
+	for _, textType := range knownTextTypes {
+		if strings.HasPrefix(contentType, textType) {
+			return true
+		}
+	}
+
+	// 包含特定后缀的类型
+	knownTextSuffixes := []string{
+		"+json", // JSON类型的变体如application/ld+json
+		"+xml",  // XML类型的变体如application/rdf+xml
+		"+text", // 任何带text后缀的类型
+	}
+
+	for _, suffix := range knownTextSuffixes {
+		if strings.HasSuffix(contentType, suffix) {
+			return true
+		}
+	}
+
+	// 特定的不常见但仍是文本的MIME类型
+	otherTextTypes := map[string]bool{
+		"application/json-patch+json":  true,
+		"application/merge-patch+json": true,
+		"application/schema+json":      true,
+		"application/vnd.api+json":     true,
+		"application/vnd.github+json":  true,
+		"application/problem+json":     true,
+		"application/x-httpd-php":      true,
+		"application/x-sh":             true,
+		"application/x-csh":            true,
+		"application/typescript":       true,
+		"application/sql":              true,
+		"application/csv":              true,
+		"application/x-csv":            true,
+		"text/csv":                     true,
+		"application/ld+json":          true,
+	}
+
+	if otherTextTypes[contentType] {
+		return true
+	}
+
+	return false
 }

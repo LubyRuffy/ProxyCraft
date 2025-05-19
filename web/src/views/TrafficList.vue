@@ -20,13 +20,13 @@
     </div>
 
     <!-- 主界面 -->
-    <div class="main-content">
+    <div class="main-content" :style="{ height: `calc(100vh - 38px - ${detailPanelHeight}px)` }">
       <!-- 请求列表 -->
       <el-table
         :data="trafficEntries"
         stripe
         style="width: 100%"
-        height="calc(100vh - 347px)"
+        height="100%"
         @row-click="handleRowClick"
         v-loading="loading && !detailLoading"
         highlight-current-row
@@ -68,22 +68,34 @@
           </template>
         </el-table-column>
       </el-table>
+    </div>
 
-      <!-- 详情面板 -->
-      <div class="detail-panel" v-if="selectedEntry">
-        <request-response-panel
-          :request="requestDetails"
-          :response="responseDetails"
-          :loading="detailLoading"
-          :selectedEntry="selectedEntry"
-        />
-      </div>
+    <!-- 可拖动分隔条 -->
+    <div 
+      class="resizer" 
+      @mousedown="startResize" 
+      :class="{ 'resizing': isResizing }"
+      v-if="selectedEntry"
+    ></div>
+
+    <!-- 详情面板 -->
+    <div 
+      class="detail-panel" 
+      v-if="selectedEntry" 
+      :style="{ height: `${detailPanelHeight}px` }"
+    >
+      <request-response-panel
+        :request="requestDetails"
+        :response="responseDetails"
+        :loading="detailLoading"
+        :selectedEntry="selectedEntry"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, onUnmounted } from 'vue';
 import { useStore } from 'vuex';
 import { ElMessageBox } from 'element-plus';
 import RequestResponsePanel from '../components/RequestResponsePanel.vue';
@@ -95,6 +107,10 @@ const transportMode = ref('');
 const detailLoading = ref(false);
 const lastClickedId = ref('');
 const clickDebounceTimer = ref<number | null>(null);
+const detailPanelHeight = ref(300); // 初始高度
+const isResizing = ref(false);
+const minHeight = 100; // 最小高度
+const maxHeight = 600; // 最大高度
 
 // 从 store 中获取状态
 const trafficEntries = computed(() => store.getters.allTrafficEntries);
@@ -104,6 +120,43 @@ const responseDetails = computed(() => store.getters.responseDetails);
 const loading = computed(() => store.getters.isLoading);
 const error = computed(() => store.getters.error);
 const isConnected = computed(() => store.getters.isConnected);
+
+// 拖动调整大小相关方法
+const startResize = (e: MouseEvent) => {
+  isResizing.value = true;
+  document.addEventListener('mousemove', handleMouseMove);
+  document.addEventListener('mouseup', stopResize);
+  // 阻止默认行为和冒泡
+  e.preventDefault();
+  e.stopPropagation();
+};
+
+const handleMouseMove = (e: MouseEvent) => {
+  if (!isResizing.value) return;
+  
+  // 计算窗口总高度
+  const windowHeight = window.innerHeight;
+  // 计算鼠标位置相对于窗口底部的距离
+  const fromBottom = windowHeight - e.clientY;
+  
+  // 确保在最小和最大高度范围内
+  let newHeight = Math.max(minHeight, Math.min(maxHeight, fromBottom));
+  
+  // 更新详情面板高度
+  detailPanelHeight.value = newHeight;
+};
+
+const stopResize = () => {
+  isResizing.value = false;
+  document.removeEventListener('mousemove', handleMouseMove);
+  document.removeEventListener('mouseup', stopResize);
+};
+
+// 移除事件监听器，防止内存泄漏
+onUnmounted(() => {
+  document.removeEventListener('mousemove', handleMouseMove);
+  document.removeEventListener('mouseup', stopResize);
+});
 
 // 初始化WebSocket并加载数据
 onMounted(() => {
@@ -278,13 +331,43 @@ const getStatusClass = (statusCode: number) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: height 0.1s;
+}
+
+/* 可拖动分隔条 */
+.resizer {
+  height: 6px;
+  background-color: #e0e0e0;
+  cursor: ns-resize;
+  position: relative;
+  user-select: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
+
+.resizer::before {
+  content: "";
+  height: 2px;
+  width: 30px;
+  background-color: #a0a0a0;
+  border-radius: 1px;
+}
+
+.resizer:hover, .resizer.resizing {
+  background-color: #ccc;
+}
+
+.resizer:hover::before, .resizer.resizing::before {
+  background-color: #666;
 }
 
 .detail-panel {
-  height: 300px;
   overflow: hidden;
   border-top: 1px solid #e6e6e6;
   background-color: #f9f9f9;
+  transition: height 0.1s;
 }
 
 .status-success {
@@ -356,5 +439,10 @@ const getStatusClass = (statusCode: number) => {
 
 .path-cell {
   color: #606266;
+}
+
+/* 修改鼠标样式，提高拖动时的用户体验 */
+body.resizing {
+  cursor: ns-resize !important;
 }
 </style> 

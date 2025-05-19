@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
@@ -406,4 +408,190 @@ func (s *slowReader) Read(p []byte) (n int, err error) {
 	s.position++
 
 	return 1, nil
+}
+
+// TestDecompressBody 测试响应体解压缩功能
+func TestDecompressBody(t *testing.T) {
+	t.Run("无压缩内容", func(t *testing.T) {
+		// 创建一个没有压缩的响应
+		resp := &http.Response{
+			StatusCode: 200,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("测试数据")),
+		}
+
+		// 调用解压函数
+		err := decompressBody(resp)
+		assert.NoError(t, err)
+
+		// 验证内容没有变化
+		bodyBytes, err := io.ReadAll(resp.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, "测试数据", string(bodyBytes))
+	})
+
+	t.Run("Gzip压缩内容", func(t *testing.T) {
+		// 创建Gzip压缩的测试数据
+		var compressedData bytes.Buffer
+		gzipWriter := gzip.NewWriter(&compressedData)
+		_, err := gzipWriter.Write([]byte(`{"message":"这是一个测试JSON"}`))
+		assert.NoError(t, err)
+		err = gzipWriter.Close()
+		assert.NoError(t, err)
+
+		// 创建带有Gzip压缩的响应
+		resp := &http.Response{
+			StatusCode: 200,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(compressedData.Bytes())),
+		}
+		resp.Header.Set("Content-Encoding", "gzip")
+		resp.Header.Set("Content-Type", "application/json")
+
+		// 调用解压函数
+		err = decompressBody(resp)
+		assert.NoError(t, err)
+
+		// 验证解压后的内容
+		bodyBytes, err := io.ReadAll(resp.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, `{"message":"这是一个测试JSON"}`, string(bodyBytes))
+
+		// 验证Content-Encoding已被移除
+		assert.Equal(t, "", resp.Header.Get("Content-Encoding"))
+
+		// 验证Content-Length已被更新
+		assert.Equal(t, fmt.Sprint(len(`{"message":"这是一个测试JSON"}`)), resp.Header.Get("Content-Length"))
+	})
+
+	t.Run("Deflate压缩内容", func(t *testing.T) {
+		// 创建Deflate压缩的测试数据
+		var compressedData bytes.Buffer
+		deflateWriter, err := flate.NewWriter(&compressedData, flate.DefaultCompression)
+		assert.NoError(t, err)
+		_, err = deflateWriter.Write([]byte("<html><body>这是一个测试HTML</body></html>"))
+		assert.NoError(t, err)
+		err = deflateWriter.Close()
+		assert.NoError(t, err)
+
+		// 创建带有Deflate压缩的响应
+		resp := &http.Response{
+			StatusCode: 200,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(compressedData.Bytes())),
+		}
+		resp.Header.Set("Content-Encoding", "deflate")
+		resp.Header.Set("Content-Type", "text/html")
+
+		// 调用解压函数
+		err = decompressBody(resp)
+		assert.NoError(t, err)
+
+		// 验证解压后的内容
+		bodyBytes, err := io.ReadAll(resp.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, "<html><body>这是一个测试HTML</body></html>", string(bodyBytes))
+
+		// 验证Content-Encoding已被移除
+		assert.Equal(t, "", resp.Header.Get("Content-Encoding"))
+
+		// 验证Content-Length已被更新
+		assert.Equal(t, fmt.Sprint(len("<html><body>这是一个测试HTML</body></html>")), resp.Header.Get("Content-Length"))
+	})
+
+	t.Run("无效的Gzip内容", func(t *testing.T) {
+		// 创建无效的Gzip数据
+		invalidData := []byte("这不是有效的gzip压缩数据")
+
+		// 创建带有错误Gzip压缩内容的响应
+		resp := &http.Response{
+			StatusCode: 200,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(invalidData)),
+		}
+		resp.Header.Set("Content-Encoding", "gzip")
+
+		// 调用解压函数，应该返回错误
+		err := decompressBody(resp)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "无效的gzip数据: 缺少正确的魔术数字")
+	})
+
+	t.Run("不支持的压缩格式", func(t *testing.T) {
+		// 创建带有不支持压缩格式的响应
+		resp := &http.Response{
+			StatusCode: 200,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("一些数据")),
+		}
+		resp.Header.Set("Content-Encoding", "br") // 使用Brotli压缩算法
+
+		// 调用解压函数，应该返回错误
+		err := decompressBody(resp)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "不支持的编码方式: br")
+	})
+
+	t.Run("nil响应", func(t *testing.T) {
+		// 测试nil响应处理
+		err := decompressBody(nil)
+		assert.NoError(t, err)
+	})
+
+	t.Run("nil响应体", func(t *testing.T) {
+		// 测试nil响应体处理
+		resp := &http.Response{
+			StatusCode: 204, // No Content
+			Header:     make(http.Header),
+			Body:       nil,
+		}
+		resp.Header.Set("Content-Encoding", "gzip")
+
+		// 调用解压函数
+		err := decompressBody(resp)
+		assert.NoError(t, err)
+	})
+}
+
+// TestIsTextContentType 测试文本内容类型识别函数
+func TestIsTextContentType(t *testing.T) {
+	// 测试各种内容类型
+	textTypes := []string{
+		"text/plain",
+		"text/html",
+		"text/css",
+		"text/javascript",
+		"application/json",
+		"application/xml",
+		"application/javascript",
+		"application/x-www-form-urlencoded",
+		"application/vnd.api+json",
+		"application/vnd.custom+xml",
+	}
+
+	nonTextTypes := []string{
+		"",
+		"image/jpeg",
+		"image/png",
+		"audio/mpeg",
+		"video/mp4",
+		"application/octet-stream",
+		"application/pdf",
+		"application/zip",
+		"application/x-gzip",
+	}
+
+	// 验证文本类型
+	for _, contentType := range textTypes {
+		t.Run(contentType, func(t *testing.T) {
+			assert.True(t, isTextContentType(contentType), fmt.Sprintf("%s 应该被识别为文本类型", contentType))
+		})
+	}
+
+	// 验证非文本类型
+	for _, contentType := range nonTextTypes {
+		t.Run(contentType, func(t *testing.T) {
+			assert.False(t, isTextContentType(contentType), fmt.Sprintf("%s 不应该被识别为文本类型", contentType))
+		})
+	}
 }
