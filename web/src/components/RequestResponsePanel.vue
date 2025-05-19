@@ -44,7 +44,7 @@
       
       <!-- 分隔条 -->
       <div class="splitter" :class="{'full-request': displayMode === 'request', 'full-response': displayMode === 'response'}">
-        <div class="request-pane" v-show="displayMode === 'split' || displayMode === 'request'">
+        <div class="request-pane" v-show="displayMode === 'split' || displayMode === 'request'" :style="{ flex: requestFlex }">
           <div class="panel-header">
             <div class="panel-title">请求</div>
             <div class="panel-actions">
@@ -100,9 +100,13 @@
           </div>
         </div>
         
-        <div class="panel-divider" v-show="displayMode === 'split'"></div>
+        <div 
+          class="panel-divider" 
+          v-show="displayMode === 'split'" 
+          @mousedown="startResize"
+        ></div>
         
-        <div class="response-pane" v-show="displayMode === 'split' || displayMode === 'response'">
+        <div class="response-pane" v-show="displayMode === 'split' || displayMode === 'response'" :style="{ flex: responseFlex }">
           <div class="panel-header">
             <div class="panel-title">响应</div>
             <div class="panel-actions">
@@ -163,7 +167,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import { RequestDetails, ResponseDetails, TrafficEntry } from '../store';
 import { Search, ArrowUp, ArrowDown, Setting, Share, CopyDocument, Download } from '@element-plus/icons-vue';
 
@@ -179,21 +183,146 @@ const responseView = ref('pretty');
 const displayMode = ref('split');
 const searchKeyword = ref('');
 
+// 分隔条拖动相关状态
+const isResizing = ref(false);
+const requestFlex = ref('1');
+const responseFlex = ref('1');
+const startX = ref(0);
+const startRequestWidth = ref(0);
+const startResponseWidth = ref(0);
+
+// 开始拖动
+const startResize = (e: MouseEvent) => {
+  isResizing.value = true;
+  startX.value = e.clientX;
+  
+  // 获取当前两个面板的宽度
+  const requestPane = document.querySelector('.request-pane') as HTMLElement;
+  const responsePane = document.querySelector('.response-pane') as HTMLElement;
+  
+  if (requestPane && responsePane) {
+    startRequestWidth.value = requestPane.offsetWidth;
+    startResponseWidth.value = responsePane.offsetWidth;
+  }
+  
+  // 添加全局鼠标事件监听
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', stopResize);
+  
+  // 添加防止选择文本的样式
+  document.body.style.userSelect = 'none';
+};
+
+// 拖动中
+const onMouseMove = (e: MouseEvent) => {
+  if (!isResizing.value) return;
+  
+  const deltaX = e.clientX - startX.value;
+  const totalWidth = startRequestWidth.value + startResponseWidth.value;
+  
+  const newRequestWidth = startRequestWidth.value + deltaX;
+  const newResponseWidth = startResponseWidth.value - deltaX;
+  
+  // 确保不会拖到特别小的尺寸
+  if (newRequestWidth < 100 || newResponseWidth < 100) return;
+  
+  // 设置flex比例
+  requestFlex.value = `${newRequestWidth / totalWidth}`;
+  responseFlex.value = `${newResponseWidth / totalWidth}`;
+};
+
+// 停止拖动
+const stopResize = () => {
+  isResizing.value = false;
+  document.removeEventListener('mousemove', onMouseMove);
+  document.removeEventListener('mouseup', stopResize);
+  document.body.style.userSelect = '';
+};
+
+// 在组件卸载前移除事件监听
+onBeforeUnmount(() => {
+  if (isResizing.value) {
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', stopResize);
+    document.body.style.userSelect = '';
+  }
+});
+
 // 提取请求信息
 const requestMethod = computed(() => props.selectedEntry?.method || 'GET');
 const requestUrl = computed(() => props.selectedEntry?.path || '/');
-const requestProtocol = computed(() => props.selectedEntry?.isHTTPS ? 'HTTPS' : 'HTTP');
+const requestProtocol = computed(() => {
+  // 从请求头中获取协议版本
+  if (props.request?.headers) {
+    // 尝试从请求头中读取协议版本
+    const version = getProtocolVersionFromHeaders(props.request.headers);
+    if (version) {
+      return `HTTP/${version}`;
+    }
+  }
+  // 默认值
+  return 'HTTP/1.1';
+});
 const requestHasBody = computed(() => {
-  return props.request?.body && 
-          (typeof props.request.body === 'string' ? props.request.body.length > 0 : true);
+  // 检查是否存在请求体，且请求体不为空
+  if (!props.request?.body) return false;
+  
+  // 对于字符串类型的请求体，检查长度是否大于0
+  if (typeof props.request.body === 'string') {
+    // 如果是Binary data的情况，不显示
+    if (props.request.body === '<Binary data, 0 bytes>') {
+      return false;
+    }
+    return props.request.body.length > 0;
+  }
+  
+  // 对于对象类型的请求体，检查是否为空对象或有内容
+  if (typeof props.request.body === 'object') {
+    // 如果是Binary data的情况，不显示
+    if (props.request.body === '<Binary data, 0 bytes>') {
+      return false;
+    }
+    
+    // 检查是否是空对象
+    return Object.keys(props.request.body).length > 0;
+  }
+  
+  return true;
 });
 
 // 提取响应信息
 const responseStatusCode = computed(() => props.selectedEntry?.statusCode || 0);
-const responseProtocol = computed(() => props.selectedEntry?.isHTTPS ? 'HTTPS' : 'HTTP');
+const responseProtocol = computed(() => {
+  // 从响应头中获取协议版本
+  if (props.response?.headers) {
+    // 尝试从响应头中读取协议版本
+    const version = getProtocolVersionFromHeaders(props.response.headers);
+    if (version) {
+      return `HTTP/${version}`;
+    }
+  }
+  // 默认值
+  return 'HTTP/1.1';
+});
 const responseHasBody = computed(() => {
-  return props.response?.body && 
-          (typeof props.response.body === 'string' ? props.response.body.length > 0 : true);
+  // 检查是否存在响应体，且响应体不为空
+  if (!props.response?.body) return false;
+  
+  // 对于字符串类型的响应体，检查长度是否大于0
+  if (typeof props.response.body === 'string') {
+    // 如果是二进制数据的情况，特别处理
+    if (props.response.body === '<Binary data, 0 bytes>') {
+      return false;
+    }
+    return props.response.body.length > 0;
+  }
+  
+  // 对于对象类型的响应体，检查是否为空对象或有内容
+  if (typeof props.response.body === 'object') {
+    return Object.keys(props.response.body).length > 0;
+  }
+  
+  return true;
 });
 
 // 获取状态码的CSS类
@@ -230,6 +359,30 @@ const getStatusText = (statusCode: number) => {
   };
   
   return statusTexts[statusCode] || '';
+};
+
+// 从请求/响应头中获取协议版本
+const getProtocolVersionFromHeaders = (headers: Record<string, string>) => {
+  // 查找可能包含协议版本信息的头
+  // 常见头: Via, Server, etc.
+  if (headers['via']) {
+    // Via头格式通常为: "1.1 proxy-name"，其中1.1是协议版本
+    const match = headers['via'].match(/(\d+\.\d+)/);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+  
+  // 检查其他可能包含版本的头
+  if (headers['server']) {
+    const match = headers['server'].match(/HTTP\/(\d+\.\d+)/i);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+  
+  // 如果找不到特定的协议版本，默认返回1.1
+  return '1.1';
 };
 
 // 获取十六进制视图
@@ -364,8 +517,14 @@ const searchPrevious = () => {
 
 .panel-divider {
   width: 5px;
-  background-color: #f9f9f9;
+  background-color: #f0f0f0;
   cursor: col-resize;
+  transition: background-color 0.2s;
+  margin: 5px 0;
+}
+
+.panel-divider:hover {
+  background-color: #c0c4cc;
 }
 
 .panel-header {
