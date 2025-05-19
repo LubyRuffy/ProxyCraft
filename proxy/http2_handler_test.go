@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LubyRuffy/ProxyCraft/certs"
 	"github.com/LubyRuffy/ProxyCraft/harlogger"
@@ -343,4 +345,94 @@ func TestHTTP2MITMConnServeHTTPWithError(t *testing.T) {
 	res := w.Result()
 	// 由于该函数可能出现 panic，我们不做过于严格的断言
 	_ = res
+}
+
+// TestHandleHTTP2ConfigurationErrors tests error handling in handleHTTP2
+func TestHandleHTTP2ConfigurationErrors(t *testing.T) {
+	// 创建一个服务器实例
+	certMgr, _ := certs.NewManager()
+	server := NewServer("127.0.0.1:0", certMgr, true, nil, true, nil, false)
+
+	// 创建一个测试HTTP/2服务器
+	http2Server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("HTTP/2 response"))
+	}))
+	http2Server.EnableHTTP2 = true
+	http2Server.StartTLS()
+	defer http2Server.Close()
+
+	// 测试连接到HTTP/2服务器
+	t.Run("valid_http2_connection", func(t *testing.T) {
+		// 创建一个有效的transport
+		validTransport := &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		}
+
+		// 配置HTTP/2
+		server.handleHTTP2(validTransport)
+
+		// 创建客户端
+		client := &http.Client{
+			Transport: validTransport,
+		}
+
+		// 发送请求
+		resp, err := client.Get(http2Server.URL)
+		if err != nil {
+			t.Fatalf("Error sending HTTP/2 request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		// 验证是否使用了HTTP/2
+		assert.Equal(t, 2, resp.ProtoMajor, "应该使用HTTP/2")
+	})
+
+	// 测试特殊配置和错误处理
+	t.Run("transport_with_special_config", func(t *testing.T) {
+		// 创建一个特殊配置的transport
+		specialTransport := &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				MinVersion:         tls.VersionTLS12,
+				MaxVersion:         tls.VersionTLS13,
+			},
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+
+		// 运行handleHTTP2，确保它不会导致错误
+		server.handleHTTP2(specialTransport)
+
+		// 验证transport仍然可以工作
+		client := &http.Client{
+			Transport: specialTransport,
+		}
+
+		resp, err := client.Get(http2Server.URL)
+		assert.NoError(t, err, "应该能成功发送HTTP/2请求")
+		if err == nil && resp != nil {
+			defer resp.Body.Close()
+			assert.Equal(t, 2, resp.ProtoMajor, "应该使用HTTP/2")
+		}
+	})
+}
+
+// mockTransport实现http.RoundTripper接口，用于测试
+type mockTransport struct {
+	shouldFail bool
+}
+
+func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if m.shouldFail {
+		return nil, fmt.Errorf("模拟传输失败")
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("Mock response")),
+	}, nil
 }

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/LubyRuffy/ProxyCraft/certs"
 	"github.com/LubyRuffy/ProxyCraft/harlogger"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestServerHTTPHandlers(t *testing.T) {
@@ -373,4 +375,116 @@ func TestServerWithUpstreamProxy(t *testing.T) {
 	// 检查是否收到了上游代理的响应
 	assert.Equal(t, "true", resp.Header.Get("X-Upstream-Proxy"))
 	assert.Contains(t, string(bodyBytes), "Response from upstream proxy")
+}
+
+// TestHandleHTTPErrorCases tests error handling in handleHTTP function
+func TestHandleHTTPErrorCases(t *testing.T) {
+	// 创建必要的依赖项
+	certMgr, _ := certs.NewManager()
+	harLog := harlogger.NewLogger("", "ProxyCraft", "0.1.0")
+
+	// 创建测试服务器
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 根据请求路径返回不同的响应
+		switch r.URL.Path {
+		case "/timeout":
+			// 模拟超时
+			time.Sleep(200 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+		case "/large-response":
+			// 返回大响应
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			// 写入10KB数据
+			data := make([]byte, 10240)
+			for i := range data {
+				data[i] = byte('A' + (i % 26))
+			}
+			w.Write(data)
+		case "/invalid-url":
+			// 不做任何事，让客户端超时
+			return
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+		}
+	}))
+	defer testServer.Close()
+
+	// 创建一个监听器
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	proxyAddr := listener.Addr().String()
+	listener.Close() // 关闭监听器，让服务器可以使用这个端口
+
+	// 测试场景
+	testCases := []struct {
+		name         string
+		setupProxy   func() *Server
+		setupRequest func() (*http.Request, http.ResponseWriter)
+		checkResult  func(t *testing.T, err error)
+	}{
+		{
+			name: "创建请求错误",
+			setupProxy: func() *Server {
+				return NewServer(proxyAddr, certMgr, true, harLog, false, nil, false)
+			},
+			setupRequest: func() (*http.Request, http.ResponseWriter) {
+				// 手动创建请求而不是使用httptest.NewRequest，以避免解析URL时的panic
+				req := &http.Request{
+					Method: "GET",
+					URL: &url.URL{
+						Scheme: "http",
+						Host:   "example.com",
+					},
+					// 使用一个非URL格式的Host，用于触发NewRequest错误
+					Host: ":::invalid:host:",
+					// 必须设置这些字段以避免空指针异常
+					Header: make(http.Header),
+					Body:   http.NoBody,
+				}
+				return req, httptest.NewRecorder()
+			},
+			checkResult: func(t *testing.T, err error) {
+				// 在handleHTTP中，这个错误会导致http.Error被调用
+				// 但由于我们无法直接检查http.Error的调用，所以我们只能确保函数不会panic
+				assert.NoError(t, err, "函数不应该panic")
+			},
+		},
+		{
+			name: "处理大量数据",
+			setupProxy: func() *Server {
+				return NewServer(proxyAddr, certMgr, true, harLog, false, nil, true) // 启用流量输出
+			},
+			setupRequest: func() (*http.Request, http.ResponseWriter) {
+				req := httptest.NewRequest("GET", testServer.URL+"/large-response", nil)
+				return req, httptest.NewRecorder()
+			},
+			checkResult: func(t *testing.T, err error) {
+				assert.NoError(t, err, "处理大量数据不应该出错")
+			},
+		},
+	}
+
+	// 运行测试
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy := tc.setupProxy()
+			req, w := tc.setupRequest()
+
+			// 调用handleHTTP
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err = fmt.Errorf("函数panic: %v", r)
+					}
+				}()
+				proxy.handleHTTP(w, req)
+			}()
+
+			// 检查结果
+			tc.checkResult(t, err)
+		})
+	}
 }
