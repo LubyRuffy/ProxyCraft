@@ -13,31 +13,10 @@
           <el-radio-button label="response">仅响应</el-radio-button>
         </el-radio-group>
         
-        <!-- 搜索框 -->
-        <div class="search-bar">
-          <el-input
-            v-model="searchKeyword"
-            placeholder="查找"
-            size="small"
-            :prefix-icon="Search"
-            clearable
-            @clear="clearSearch"
-            @keyup.enter="performSearch"
-          />
-          <el-button size="small" :icon="ArrowUp" @click="searchPrevious" :disabled="!searchKeyword"></el-button>
-          <el-button size="small" :icon="ArrowDown" @click="searchNext" :disabled="!searchKeyword"></el-button>
-        </div>
-        
         <!-- 操作按钮 -->
         <div class="action-buttons">
-          <el-tooltip content="发送到重放器" placement="top">
-            <el-button size="small" :icon="Share" circle></el-button>
-          </el-tooltip>
           <el-tooltip content="复制为curl命令" placement="top">
             <el-button size="small" :icon="CopyDocument" circle></el-button>
-          </el-tooltip>
-          <el-tooltip content="导出请求/响应" placement="top">
-            <el-button size="small" :icon="Download" circle></el-button>
           </el-tooltip>
         </div>
       </div>
@@ -190,6 +169,17 @@ const responseFlex = ref('1');
 const startX = ref(0);
 const startRequestWidth = ref(0);
 const startResponseWidth = ref(0);
+
+// 处理显示模式改变后的逻辑
+const handleDisplayModeChange = () => {
+  // 重置分隔条相关状态
+  isResizing.value = false;
+  requestFlex.value = '1';
+  responseFlex.value = '1';
+  startX.value = 0;
+  startRequestWidth.value = 0;
+  startResponseWidth.value = 0;
+};
 
 // 开始拖动
 const startResize = (e: MouseEvent) => {
@@ -425,26 +415,6 @@ const getHexView = (data: any): string => {
   
   return result;
 };
-
-// 搜索功能
-const clearSearch = () => {
-  searchKeyword.value = '';
-};
-
-const performSearch = () => {
-  console.log('搜索:', searchKeyword.value);
-  // 实际搜索功能需要实现
-};
-
-const searchNext = () => {
-  console.log('查找下一个');
-  // 实际搜索功能需要实现
-};
-
-const searchPrevious = () => {
-  console.log('查找上一个');
-  // 实际搜索功能需要实现
-};
 </script>
 
 <style>
@@ -496,12 +466,32 @@ const searchPrevious = () => {
   overflow: hidden;
 }
 
+.splitter.full-request {
+  display: flex;
+  flex-direction: column;
+}
+
 .splitter.full-request .request-pane {
-  flex: 1;
+  flex: 1 !important;
+  width: 100% !important;
+}
+
+.splitter.full-request .response-pane {
+  display: none;
+}
+
+.splitter.full-response {
+  display: flex;
+  flex-direction: column;
 }
 
 .splitter.full-response .response-pane {
-  flex: 1;
+  flex: 1 !important;
+  width: 100% !important;
+}
+
+.splitter.full-response .request-pane {
+  display: none;
 }
 
 .request-pane, .response-pane {
