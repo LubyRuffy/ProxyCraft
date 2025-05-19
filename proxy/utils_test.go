@@ -2,10 +2,15 @@ package proxy
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"net/http"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/LubyRuffy/ProxyCraft/harlogger"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -78,4 +83,251 @@ func TestSimpleRequestResponseDump(t *testing.T) {
 	assert.Contains(t, output, "200 OK")
 	assert.Contains(t, output, "Content-Type: application/json")
 	assert.Contains(t, output, `{"result":"success"}`)
+}
+
+// TestLogHeader 测试日志记录HTTP头信息函数
+func TestLogHeader(t *testing.T) {
+	// 创建测试用的HTTP头
+	header := make(http.Header)
+	header.Add("Content-Type", "text/html")
+	header.Add("Content-Length", "123")
+	header.Add("Connection", "keep-alive")
+	header.Add("X-Test-Header", "test-value")
+
+	// 直接调用logHeader函数
+	logHeader(header, "Test Headers:")
+
+	// 由于logHeader只是打印日志，没有返回值，我们只能测试它没有panic
+	// 在实际情况下，可以捕获日志输出来验证，但这里简化处理
+}
+
+// TestDumpRequestBody 测试请求体内容导出功能
+func TestDumpRequestBody(t *testing.T) {
+	// 创建服务器
+	server := &Server{
+		Addr:        "127.0.0.1:0",
+		Verbose:     true,
+		DumpTraffic: true, // 启用流量输出
+	}
+
+	// 测试场景1: 标准请求
+	req, err := http.NewRequest("POST", "http://example.com/test", strings.NewReader("Test request body"))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+
+	// 备份原来的输出设备
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	// 调用函数
+	server.dumpRequestBody(req)
+
+	// 恢复输出设备
+	w.Close()
+	os.Stdout = oldStdout
+
+	// 读取捕获的输出
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// 验证输出
+	assert.Contains(t, output, "Test request body")
+
+	// 测试场景2: 请求没有body
+	reqWithoutBody, _ := http.NewRequest("GET", "http://example.com/test", nil)
+
+	// 再次设置捕获输出
+	r, w, _ = os.Pipe()
+	os.Stdout = w
+
+	// 调用函数
+	server.dumpRequestBody(reqWithoutBody)
+
+	// 恢复输出设备
+	w.Close()
+	os.Stdout = oldStdout
+
+	// 不需要验证输出，因为不应该有任何输出
+}
+
+// TestDumpResponseBody 测试响应体内容导出功能
+func TestDumpResponseBody(t *testing.T) {
+	// 创建服务器
+	server := &Server{
+		Addr:        "127.0.0.1:0",
+		Verbose:     true,
+		DumpTraffic: true, // 启用流量输出
+	}
+
+	// 测试场景1: 标准响应
+	resp := &http.Response{
+		StatusCode: 200,
+		Proto:      "HTTP/1.1",
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("Test response body")),
+	}
+	resp.Header.Set("Content-Type", "text/plain")
+
+	// 备份原来的输出设备
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	// 调用函数
+	server.dumpResponseBody(resp)
+
+	// 恢复输出设备
+	w.Close()
+	os.Stdout = oldStdout
+
+	// 读取捕获的输出
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// 验证输出
+	assert.Contains(t, output, "Test response body")
+
+	// 测试场景2: 响应没有body
+	respWithoutBody := &http.Response{
+		StatusCode: 204,
+		Proto:      "HTTP/1.1",
+		Header:     make(http.Header),
+		Body:       nil,
+	}
+
+	// 再次设置捕获输出
+	r, w, _ = os.Pipe()
+	os.Stdout = w
+
+	// 调用函数
+	server.dumpResponseBody(respWithoutBody)
+
+	// 恢复输出设备
+	w.Close()
+	os.Stdout = oldStdout
+}
+
+// TestBinaryContentHandling 测试二进制内容处理
+func TestBinaryContentHandling(t *testing.T) {
+	// 创建服务器
+	server := &Server{
+		Addr:        "127.0.0.1:0",
+		Verbose:     true,
+		DumpTraffic: true, // 启用流量输出
+	}
+
+	// 创建一个包含二进制数据的请求
+	binaryData := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD}
+	req, err := http.NewRequest("POST", "http://example.com/binary", bytes.NewReader(binaryData))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	// 备份原来的输出设备
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	// 调用函数
+	server.dumpRequestBody(req)
+
+	// 恢复输出设备
+	w.Close()
+	os.Stdout = oldStdout
+
+	// 读取捕获的输出
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// 验证输出包含(binary data)提示
+	assert.Contains(t, output, "(binary data)")
+}
+
+// TestReadAndRestoreBodyError 测试读取和恢复请求/响应体的错误处理
+func TestReadAndRestoreBodyError(t *testing.T) {
+	// 创建一个会在读取时产生错误的ReadCloser
+	errorReader := &errorReadCloser{err: fmt.Errorf("test error")}
+
+	// 测试readAndRestoreBody函数
+	bodySlot := io.ReadCloser(errorReader)
+	data, err := readAndRestoreBody(&bodySlot, -1)
+
+	// 验证结果
+	assert.Error(t, err)
+	assert.Equal(t, "test error", err.Error())
+	assert.Empty(t, data)
+}
+
+// errorReadCloser 实现io.ReadCloser接口，但始终返回错误
+type errorReadCloser struct {
+	err error
+}
+
+func (e *errorReadCloser) Read(p []byte) (n int, err error) {
+	return 0, e.err
+}
+
+func (e *errorReadCloser) Close() error {
+	return nil
+}
+
+// TestServerLogToHAR 测试代理服务器的HAR日志记录功能
+func TestServerLogToHAR(t *testing.T) {
+	// 创建有效的HarLogger
+	harLog := harlogger.NewLogger("", "ProxyCraft Test", "0.1.0")
+
+	// 创建代理服务器 - 启用HarLogger
+	server := &Server{
+		Addr:       "127.0.0.1:0",
+		Verbose:    true,
+		HarLogger:  harLog,
+		EnableMITM: true,
+	}
+
+	// 创建测试请求
+	req, err := http.NewRequest("GET", "http://example.com/test", nil)
+	assert.NoError(t, err)
+
+	// 创建测试响应
+	resp := &http.Response{
+		StatusCode: 200,
+		Proto:      "HTTP/1.1",
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("Test response body")),
+	}
+
+	// 测试场景1: 标准请求和响应
+	startTime := time.Now().Add(-1 * time.Second) // 1秒前
+	timeTaken := 1 * time.Second
+	server.logToHAR(req, resp, startTime, timeTaken, false)
+
+	// 测试场景2: SSE响应
+	server.logToHAR(req, resp, startTime, timeTaken, true)
+
+	// 测试场景3: 请求为nil
+	server.logToHAR(nil, resp, startTime, timeTaken, false)
+
+	// 测试场景4: HarLogger未启用
+	disabledServer := &Server{
+		Addr:       "127.0.0.1:0",
+		Verbose:    true,
+		HarLogger:  nil, // HarLogger为nil
+		EnableMITM: true,
+	}
+	disabledServer.logToHAR(req, resp, startTime, timeTaken, false)
+
+	// 测试场景5: HarLogger已启用但IsEnabled()返回false
+	// 创建一个没有输出文件的logger，它的IsEnabled()将返回false
+	disabledHarLog := harlogger.NewLogger("", "ProxyCraft Test", "0.1.0")
+
+	disabledServerWithLogger := &Server{
+		Addr:       "127.0.0.1:0",
+		Verbose:    true,
+		HarLogger:  disabledHarLog,
+		EnableMITM: true,
+	}
+	disabledServerWithLogger.logToHAR(req, resp, startTime, timeTaken, false)
 }

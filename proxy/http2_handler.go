@@ -66,6 +66,12 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[HTTP/2] %s %s%s", r.Method, r.Host, r.URL.RequestURI())
 	}
 
+	// 检查conn是否为nil，这在测试中可能会发生
+	if h.conn == nil {
+		http.Error(w, "Connection is not available", http.StatusBadGateway)
+		return
+	}
+
 	// Create a new request to the target server
 	targetURL := &url.URL{
 		Scheme:   "https",
@@ -238,7 +244,7 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[HTTP/2] Error sending request to target server %s: %v", targetURL.String(), err)
 		http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL.String(), err), http.StatusBadGateway)
 		// Log to HAR even if there's an error sending the request (resp might be nil)
-		if h.proxy.HarLogger.IsEnabled() {
+		if h.proxy.HarLogger != nil && h.proxy.HarLogger.IsEnabled() {
 			serverIP := ""
 			if outReq != nil && outReq.URL != nil {
 				serverIP = outReq.URL.Host
@@ -254,7 +260,7 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log to HAR - 但对于SSE响应，我们需要特殊处理
-	if h.proxy.HarLogger.IsEnabled() {
+	if h.proxy.HarLogger != nil && h.proxy.HarLogger.IsEnabled() {
 		serverIP := ""
 		if outReq != nil && outReq.URL != nil {
 			serverIP = outReq.URL.Host

@@ -14,7 +14,7 @@ import (
 // logToHAR 是一个辅助方法，用于统一处理 HAR 日志记录
 // 这个方法集中了所有 HAR 日志记录逻辑，避免代码重复
 func (s *Server) logToHAR(req *http.Request, resp *http.Response, startTime time.Time, timeTaken time.Duration, isSSE bool) {
-	if !s.HarLogger.IsEnabled() {
+	if s.HarLogger == nil || !s.HarLogger.IsEnabled() {
 		return
 	}
 
@@ -247,6 +247,7 @@ func (s *Server) dumpRequestBody(req *http.Request) {
 	contentType := req.Header.Get("Content-Type")
 	if isBinaryContent(bodyBytes, contentType) {
 		log.Printf("Binary request body detected (%d bytes), not displaying\n", len(bodyBytes))
+		fmt.Println("\n(binary data)")
 		return
 	}
 
@@ -286,6 +287,7 @@ func (s *Server) dumpResponseBody(resp *http.Response) {
 	contentType := resp.Header.Get("Content-Type")
 	if isBinaryContent(bodyBytes, contentType) {
 		log.Printf("Binary response body detected (%d bytes), not displaying\n", len(bodyBytes))
+		fmt.Println("\n(binary data)")
 		return
 	}
 
