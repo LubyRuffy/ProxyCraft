@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LubyRuffy/ProxyCraft/api"
 	"github.com/LubyRuffy/ProxyCraft/certs"
 	"github.com/LubyRuffy/ProxyCraft/cli"
 	"github.com/LubyRuffy/ProxyCraft/harlogger" // Added for HAR logging
@@ -93,9 +94,48 @@ func main() {
 		log.Printf("Using upstream proxy: %s", upstreamProxyURL.String())
 	}
 
-	// 创建命令行事件处理器
-	cliHandler := handlers.NewCLIHandler(cfg.Verbose, cfg.DumpTraffic)
-	statsReporter := handlers.NewStatsReporter(cliHandler, 10*time.Second)
+	// 根据模式选择事件处理器
+	var eventHandler proxy.EventHandler
+
+	// Web模式使用WebHandler
+	if cfg.Mode == "web" {
+		log.Printf("启动Web模式...")
+
+		// 创建Web事件处理器
+		webHandler := handlers.NewWebHandler(cfg.Verbose)
+
+		// 创建API服务器，默认使用8081端口
+		apiServer := api.NewServer(webHandler, 8081)
+
+		// 启动API服务器
+		go func() {
+			log.Printf("启动API服务器在端口8081...")
+			if err := apiServer.Start(); err != nil {
+				log.Fatalf("启动API服务器失败: %v", err)
+			}
+		}()
+
+		// 设置Web处理器为事件处理器
+		eventHandler = webHandler
+
+		log.Printf("Web模式已启用，界面地址: %s", apiServer.UIAddr)
+		log.Printf("如果Web界面无法显示，请先运行: ./build_web.sh")
+	} else {
+		// CLI模式使用CLIHandler
+		log.Printf("启动CLI模式...")
+
+		cliHandler := handlers.NewCLIHandler(cfg.Verbose, cfg.DumpTraffic)
+		statsReporter := handlers.NewStatsReporter(cliHandler, 10*time.Second)
+
+		// 启动统计报告
+		statsReporter.Start()
+
+		// 设置CLI处理器为事件处理器
+		eventHandler = cliHandler
+
+		// 在函数返回时停止统计报告
+		defer statsReporter.Stop()
+	}
 
 	// 创建服务器配置
 	serverConfig := proxy.ServerConfig{
@@ -106,7 +146,7 @@ func main() {
 		EnableMITM:    cfg.EnableMITM,
 		UpstreamProxy: upstreamProxyURL,
 		DumpTraffic:   cfg.DumpTraffic,
-		EventHandler:  cliHandler,
+		EventHandler:  eventHandler,
 	}
 
 	// 初始化并启动代理服务器
@@ -133,9 +173,6 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 启动统计报告
-	statsReporter.Start()
-
 	// Start the proxy server in a goroutine
 	go func() {
 		log.Printf("Starting proxy server on %s", listenAddr)
@@ -147,9 +184,6 @@ func main() {
 	// Wait for termination signal
 	sig := <-sigChan
 	log.Printf("Received signal %v, shutting down...", sig)
-
-	// 输出最终统计报告
-	statsReporter.Stop()
 
 	// The deferred harLogger.Save() will be called when main() exits
 }

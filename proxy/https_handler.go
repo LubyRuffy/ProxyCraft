@@ -277,6 +277,26 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		// Send the outgoing request
 		startTime := time.Now()
 
+		// 创建请求上下文并通知请求事件
+		reqCtx := s.createRequestContext(tunneledReq, targetURL.String(), startTime, true)
+		modifiedReq := s.notifyRequest(reqCtx)
+		if modifiedReq != tunneledReq && modifiedReq != nil {
+			// 如果请求被修改，更新外发请求
+			tunneledReq = modifiedReq
+			// 重新创建外发请求以包含修改
+			outReq, err = http.NewRequest(tunneledReq.Method, targetURL.String(), tunneledReq.Body)
+			if err != nil {
+				log.Printf("[MITM for %s] Error creating modified outgoing request: %v", r.Host, err)
+				break
+			}
+			// 复制修改后的请求头
+			outReq.Header = make(http.Header)
+			for k, vv := range tunneledReq.Header {
+				outReq.Header[k] = vv
+			}
+			outReq.Host = tunneledReq.Host
+		}
+
 		// Check if this might be an SSE request based on patterns and headers
 		potentialSSE := isSSERequest(outReq)
 		if s.Verbose && potentialSSE {
@@ -352,9 +372,20 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[MITM for %s] Error sending request to target %s: %v", r.Host, targetURL.String(), err)
 				// Log to HAR even if there's an error
 				s.logToHAR(tunneledReq, nil, startTime, timeTaken, false)
+				s.notifyError(err, reqCtx)
 				break
 			}
 			defer resp.Body.Close()
+
+			// 创建响应上下文
+			respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
+
+			// 通知响应事件
+			modifiedResp := s.notifyResponse(respCtx)
+			if modifiedResp != resp && modifiedResp != nil {
+				resp = modifiedResp
+				respCtx.Response = resp
+			}
 
 			// Log to HAR
 			s.logToHAR(tunneledReq, resp, startTime, timeTaken, isServerSentEvent(resp))
@@ -486,7 +517,18 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[MITM for %s] Error sending request to target %s: %v", r.Host, targetURL.String(), err)
 			// Log to HAR even if there's an error sending the request (resp might be nil)
 			s.logToHAR(tunneledReq, nil, startTime, timeTaken, false)
+			s.notifyError(err, reqCtx)
 			break
+		}
+
+		// 创建响应上下文
+		respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
+
+		// 通知响应事件
+		modifiedResp := s.notifyResponse(respCtx)
+		if modifiedResp != resp && modifiedResp != nil {
+			resp = modifiedResp
+			respCtx.Response = resp
 		}
 
 		// Log to HAR - 但对于SSE响应，我们在处理 SSE 时记录
