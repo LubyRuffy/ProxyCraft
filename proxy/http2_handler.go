@@ -33,6 +33,9 @@ func (s *Server) handleHTTP2MITM(tlsConn *tls.Conn, connectReq *http.Request) {
 		log.Printf("[HTTP/2] Handling HTTP/2 connection for %s", connectReq.Host)
 	}
 
+	// 通知隧道已建立
+	s.notifyTunnelEstablished(connectReq.Host, true)
+
 	// Create an HTTP/2 server
 	server := &http2.Server{}
 
@@ -80,10 +83,21 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RawQuery: r.URL.RawQuery,
 	}
 
+	// 创建请求上下文
+	startTime := time.Now()
+	reqCtx := h.proxy.createRequestContext(r, targetURL.String(), startTime, true)
+
+	// 通知请求事件
+	modifiedReq := h.proxy.notifyRequest(reqCtx)
+	if modifiedReq != r && modifiedReq != nil {
+		r = modifiedReq
+	}
+
 	outReq, err := http.NewRequest(r.Method, targetURL.String(), r.Body)
 	if err != nil {
 		log.Printf("[HTTP/2] Error creating outgoing request: %v", err)
 		http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
+		h.proxy.notifyError(err, reqCtx)
 		return
 	}
 
@@ -104,7 +118,7 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send the request to the target server
-	startTime := time.Now()
+	startTime = time.Now()
 
 	// Check if this might be an SSE request based on patterns and headers
 	potentialSSE := isSSERequest(outReq)
@@ -175,12 +189,42 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL.String(), err), http.StatusBadGateway)
 			// Log to HAR even if there's an error sending the request (resp might be nil)
 			h.proxy.logToHAR(r, nil, startTime, timeTaken, false)
+			h.proxy.notifyError(err, reqCtx)
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.Request == nil {
 			resp.Request = outReq
+		}
+
+		// Log to HAR - 但对于SSE响应，我们需要特殊处理
+		if h.proxy.HarLogger != nil && h.proxy.HarLogger.IsEnabled() {
+			serverIP := ""
+			if outReq != nil && outReq.URL != nil {
+				serverIP = outReq.URL.Host
+			}
+
+			// 检查是否是SSE响应
+			if isServerSentEvent(resp) {
+				// 对于SSE响应，创建一个没有响应体的副本，以避免读取整个响应体
+				respCopy := *resp
+				respCopy.Body = nil
+				h.proxy.HarLogger.AddEntry(r, &respCopy, startTime, timeTaken, serverIP, r.RemoteAddr)
+			} else {
+				// 对于非SSE响应，正常记录
+				h.proxy.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
+			}
+		}
+
+		// 创建响应上下文
+		respCtx := h.proxy.createResponseContext(reqCtx, resp, timeTaken)
+
+		// 通知响应事件
+		modifiedResp := h.proxy.notifyResponse(respCtx)
+		if modifiedResp != resp && modifiedResp != nil {
+			resp = modifiedResp
+			respCtx.Response = resp
 		}
 
 		// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
@@ -214,7 +258,7 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Set the status code
+			// Set the status code properly
 			w.WriteHeader(resp.StatusCode)
 
 			// Copy the body from target server's response to our response writer
@@ -251,9 +295,20 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			h.proxy.HarLogger.AddEntry(r, nil, startTime, timeTaken, serverIP, r.RemoteAddr)
 		}
+		h.proxy.notifyError(err, reqCtx)
 		return
 	}
 	defer resp.Body.Close()
+
+	// 创建响应上下文
+	respCtx := h.proxy.createResponseContext(reqCtx, resp, timeTaken)
+
+	// 通知响应事件
+	modifiedResp := h.proxy.notifyResponse(respCtx)
+	if modifiedResp != resp && modifiedResp != nil {
+		resp = modifiedResp
+		respCtx.Response = resp
+	}
 
 	if resp.Request == nil {
 		resp.Request = outReq

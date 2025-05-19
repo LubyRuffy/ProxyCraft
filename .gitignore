@@ -13,3 +13,17 @@ proxy/proxycraft-ca-key.pem
 proxy/proxycraft-ca.pem
 proxy/server.go.bak
 proxy/server.go.original
+
+# 前端相关
+node_modules/
+web/node_modules/
+web/dist/
+api/dist/
+web/.vite/
+
+# 编译输出
+*.log
+*.har
+__debug_bin*
+api/.DS_Store
+web/package-lock.json
