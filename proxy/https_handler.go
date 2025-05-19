@@ -486,9 +486,9 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 
 				// For non-SSE responses, proceed with normal handling
 				// Write the response back to the client over the TLS tunnel
-				err = resp.Write(tlsClientConn)
+				err = s.tunnelHTTPSResponse(tlsClientConn, resp, reqCtx)
 				if err != nil {
-					log.Printf("[MITM for %s] Error writing response to client: %v", r.Host, err)
+					log.Printf("[MITM for %s] Error tunneling response to client: %v", r.Host, err)
 					resp.Body.Close()
 					break
 				}
@@ -610,9 +610,9 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// For non-SSE responses, proceed with normal handling
 			// Write the response back to the client over the TLS tunnel
-			err = resp.Write(tlsClientConn)
+			err = s.tunnelHTTPSResponse(tlsClientConn, resp, reqCtx)
 			if err != nil {
-				log.Printf("[MITM for %s] Error writing response to client: %v", r.Host, err)
+				log.Printf("[MITM for %s] Error tunneling response to client: %v", r.Host, err)
 				resp.Body.Close()
 				break
 			}
@@ -630,4 +630,72 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	if s.Verbose {
 		log.Printf("[MITM for %s] Exiting MITM processing loop.", r.Host)
 	}
+}
+
+// tunnelHTTPSResponse 处理HTTPS隧道响应，返回到客户端
+func (s *Server) tunnelHTTPSResponse(clientConn *tls.Conn, resp *http.Response, reqCtx *RequestContext) error {
+	// 创建一个用于存储响应头的映射
+	respHeader := make(http.Header)
+
+	// 复制响应头
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			respHeader.Add(k, v)
+		}
+	}
+
+	// 处理压缩的响应体
+	contentType := resp.Header.Get("Content-Type")
+	contentEncoding := resp.Header.Get("Content-Encoding")
+
+	// 对于文本内容（如JSON，XML，HTML等）且有压缩的情况，解压后再返回
+	if isTextContentType(contentType) && contentEncoding != "" {
+		if s.Verbose {
+			log.Printf("[HTTPS] 检测到压缩的文本内容: %s, 编码: %s", contentType, contentEncoding)
+		}
+
+		err := decompressBody(resp)
+		if err != nil {
+			log.Printf("[HTTPS] 解压响应体失败: %v", err)
+			s.notifyError(err, reqCtx)
+			// 即使解压失败，仍然尝试返回原始内容
+		} else if s.Verbose {
+			log.Printf("[HTTPS] 成功解压响应体")
+
+			// 更新响应头
+			respHeader.Set("Content-Length", fmt.Sprint(resp.ContentLength))
+			respHeader.Del("Content-Encoding")
+		}
+	}
+
+	// 写入响应状态行
+	statusLine := fmt.Sprintf("%s %s\r\n", resp.Proto, resp.Status)
+	if _, err := clientConn.Write([]byte(statusLine)); err != nil {
+		return fmt.Errorf("写入状态行到客户端出错: %w", err)
+	}
+
+	// 写入响应头
+	for k, vv := range respHeader {
+		for _, v := range vv {
+			headerLine := fmt.Sprintf("%s: %s\r\n", k, v)
+			if _, err := clientConn.Write([]byte(headerLine)); err != nil {
+				return fmt.Errorf("写入响应头到客户端出错: %w", err)
+			}
+		}
+	}
+
+	// 写入空行，表示头部结束
+	if _, err := clientConn.Write([]byte("\r\n")); err != nil {
+		return fmt.Errorf("写入头部结束分隔符到客户端出错: %w", err)
+	}
+
+	// 写入响应体
+	if resp.Body != nil {
+		_, err := io.Copy(clientConn, resp.Body)
+		if err != nil {
+			return fmt.Errorf("写入响应体到客户端出错: %w", err)
+		}
+	}
+
+	return nil
 }

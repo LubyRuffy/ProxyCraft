@@ -221,5 +221,5 @@ func (r *StatsReporter) Report() {
 	fmt.Printf("QPS: %.2f, 平均响应时间: %.2fms\n",
 		float64(r.Handler.RequestCount)/runningTime.Seconds(),
 		float64(r.Handler.ResponseCount)/float64(r.Handler.RequestCount)*1000)
-	fmt.Println("--------------------------------\n")
+	fmt.Print("--------------------------------\n")
 }

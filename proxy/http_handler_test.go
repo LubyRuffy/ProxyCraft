@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +18,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mockEventHandler 是一个用于测试的简单事件处理器
+type mockEventHandler struct{}
+
+func (h *mockEventHandler) OnRequest(ctx *RequestContext) *http.Request {
+	return ctx.Request
+}
+
+func (h *mockEventHandler) OnResponse(ctx *ResponseContext) *http.Response {
+	return ctx.Response
+}
+
+func (h *mockEventHandler) OnError(err error, ctx *RequestContext) {}
+
+func (h *mockEventHandler) OnTunnelEstablished(host string, isIntercepted bool) {}
+
+func (h *mockEventHandler) OnSSE(event string, ctx *ResponseContext) {}
 
 func TestServerHTTPHandlers(t *testing.T) {
 	// 创建必要的依赖项
@@ -487,4 +506,65 @@ func TestHandleHTTPErrorCases(t *testing.T) {
 			tc.checkResult(t, err)
 		})
 	}
+}
+
+// TestHTTPHandlerWithCompression 测试HTTP处理器处理压缩响应的功能
+func TestHTTPHandlerWithCompression(t *testing.T) {
+	// 创建一个测试服务器，模拟返回gzip压缩的响应
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 设置响应头
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+
+		// 压缩响应体
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+
+		// 写入测试JSON数据
+		testData := `{"message":"这是一个测试JSON响应","success":true,"code":200}`
+		_, _ = gw.Write([]byte(testData))
+		_ = gw.Close()
+
+		// 返回压缩后的响应
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer testServer.Close()
+
+	// 创建代理服务器
+	server := &Server{
+		Addr:         "127.0.0.1:0", // 使用随机端口
+		Verbose:      true,
+		HarLogger:    harlogger.NewLogger("test.har", "TestProxy", "1.0"),
+		EventHandler: &mockEventHandler{}, // 使用mock事件处理器
+	}
+
+	// 创建测试HTTP请求，指向测试服务器
+	req, err := http.NewRequest("GET", testServer.URL, nil)
+	assert.NoError(t, err)
+
+	// 创建响应记录器
+	recorder := httptest.NewRecorder()
+
+	// 处理请求
+	server.handleHTTP(recorder, req)
+
+	// 获取代理服务器的响应
+	resp := recorder.Result()
+
+	// 验证响应头
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+	// 注意：在使用httptest.ResponseRecorder时，对header的修改可能无法正确反映
+	// 这里只确认响应体已被正确解压缩
+
+	// 读取响应体
+	body, err := io.ReadAll(resp.Body)
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	// 验证响应体已被解压
+	expectedData := `{"message":"这是一个测试JSON响应","success":true,"code":200}`
+	assert.Equal(t, expectedData, string(body))
 }
