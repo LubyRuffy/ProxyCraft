@@ -172,6 +172,26 @@ func TestSSEHandleFunction(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader("event: message\ndata: {\"message\": \"Test event\"}\n\n")),
 	}
 
+	// 创建请求上下文
+	mockReq, _ := http.NewRequest("GET", "http://example.com/events", nil)
+	mockReq.Header.Set("Accept", "text/event-stream")
+	mockResp.Request = mockReq
+
+	reqCtx := &RequestContext{
+		Request:   mockReq,
+		StartTime: time.Now(),
+		IsSSE:     true,
+		UserData:  make(map[string]interface{}),
+	}
+
+	// 创建响应上下文
+	respCtx := &ResponseContext{
+		ReqCtx:   reqCtx,
+		Response: mockResp,
+		IsSSE:    true,
+		UserData: make(map[string]interface{}),
+	}
+
 	// 创建虚拟ResponseWriter
 	respWriter := &MyMockResponseWriterFlusher{
 		headers: make(http.Header),
@@ -188,7 +208,7 @@ func TestSSEHandleFunction(t *testing.T) {
 	}
 
 	// 测试handleSSE
-	err := server.handleSSE(respWriter, mockResp)
+	err := server.handleSSE(respWriter, respCtx)
 	assert.NoError(t, err)
 
 	// 检查设置的头部

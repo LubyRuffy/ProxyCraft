@@ -444,12 +444,9 @@ func TestTunnelHTTPSResponseWithCompression(t *testing.T) {
 
 	// 假设隧道响应函数的简化版本，直接用于测试
 	testTunnelHTTPSResponse := func(conn net.Conn, resp *http.Response, reqCtx *RequestContext) error {
-		// 处理压缩的响应体
-		contentType := resp.Header.Get("Content-Type")
-		contentEncoding := resp.Header.Get("Content-Encoding")
-
-		// 对于文本内容且有压缩的情况，解压后再返回
-		if isTextContentType(contentType) && contentEncoding != "" {
+		// 处理压缩的响应体，检查Content-Type和Content-Encoding是否匹配
+		if isTextContentType(resp.Header.Get("Content-Type")) &&
+			resp.Header.Get("Content-Encoding") != "" {
 			err := decompressBody(resp)
 			if err != nil {
 				return err

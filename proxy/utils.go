@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
@@ -150,68 +149,19 @@ func (t *earlySSEDetector) RoundTrip(req *http.Request) (*http.Response, error) 
 					log.Printf("[SSE] Detected SSE response early based on Content-Type header")
 				}
 
-				// 对于SSE响应，创建一个管道来流式传输数据
-				pr, pw := io.Pipe()
+				// 我们不再在这里开始处理SSE事件，只设置适当的头部
+				// 将完整的事件处理交给handleSSE函数
 
-				// 创建一个新的响应，使用管道读取器作为响应体
-				newResp := &http.Response{
-					Status:        resp.Status,
-					StatusCode:    resp.StatusCode,
-					Header:        resp.Header.Clone(),
-					Body:          pr, // 使用管道读取器作为新的响应体
-					ContentLength: -1, // 未知长度，用于流式传输
-					Proto:         resp.Proto,
-					ProtoMajor:    resp.ProtoMajor,
-					ProtoMinor:    resp.ProtoMinor,
-				}
+				// 设置正确的头部以确保正确的流传输
+				resp.Header.Set("Content-Type", "text/event-stream")
+				resp.Header.Set("Cache-Control", "no-cache")
+				resp.Header.Set("Connection", "keep-alive")
 
-				// 确保为SSE流设置关键头部
-				newResp.Header.Set("Content-Type", "text/event-stream")
-				newResp.Header.Set("Cache-Control", "no-cache")
-				newResp.Header.Set("Connection", "keep-alive")
-				newResp.Header.Set("Transfer-Encoding", "chunked")
-
-				// 启动一个goroutine从原始响应中读取并写入我们的管道
-				go func() {
-					defer resp.Body.Close()
-					defer pw.Close()
-
-					// 为原始响应体创建一个读取器
-					reader := bufio.NewReader(resp.Body)
-
-					// 读取并转发每一行
-					for {
-						line, err := reader.ReadBytes('\n')
-						if err != nil {
-							if err == io.EOF {
-								break
-							}
-							log.Printf("[SSE] Error reading SSE stream: %v", err)
-							break
-						}
-
-						// 将行写入我们的管道
-						_, err = pw.Write(line)
-						if err != nil {
-							log.Printf("[SSE] Error writing to pipe: %v", err)
-							break
-						}
-
-						// 如果启用了详细模式，记录事件
-						lineStr := strings.TrimSpace(string(line))
-						logSSEEvent(lineStr, t.verbose)
-					}
-
-					if t.verbose {
-						log.Printf("[SSE] Finished streaming SSE response")
-					}
-				}()
-
-				// 返回带有管道读取器作为响应体的新响应
-				return newResp, nil
+				// 不再创建管道和新响应体，只标记响应是SSE
+				return resp, nil
 			}
 
-			// 对于非SSE响应，只返回原始响应
+			// 对于非SSE响应，返回原始响应
 			return resp, nil
 		},
 	}
@@ -589,4 +539,41 @@ func decompressData(data []byte, encoding string) ([]byte, error) {
 	}
 
 	return result, nil
+}
+
+// handleCompressedResponse 已被processCompressedResponse替代
+
+// processCompressedResponse 处理压缩响应体，包括解压缩和处理Content-Encoding/Content-Length头
+// 这是一个更简单的辅助函数，专注于处理压缩，而不涉及上下文创建和事件通知
+func (s *Server) processCompressedResponse(resp *http.Response, reqCtx *RequestContext, verbose bool) {
+	// 先检查是否是SSE响应，如果是则跳过解压步骤
+	if resp != nil && isServerSentEvent(resp) {
+		if verbose {
+			log.Printf("[HTTP] 检测到SSE响应，跳过解压缩处理以保持流式传输")
+		}
+		return
+	}
+
+	// 检查和处理压缩响应
+	isCompressed := resp != nil &&
+		isTextContentType(resp.Header.Get("Content-Type")) &&
+		resp.Header.Get("Content-Encoding") != ""
+
+	if isCompressed {
+		if verbose {
+			log.Printf("[HTTP] 检测到压缩的文本内容: %s, 编码: %s",
+				resp.Header.Get("Content-Type"),
+				resp.Header.Get("Content-Encoding"))
+		}
+
+		err := decompressBody(resp)
+		if err != nil {
+			log.Printf("[HTTP] 解压响应体失败: %v", err)
+			if reqCtx != nil {
+				s.notifyError(err, reqCtx)
+			}
+		} else if verbose {
+			log.Printf("[HTTP] 成功解压响应体")
+		}
+	}
 }

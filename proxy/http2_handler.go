@@ -198,26 +198,6 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp.Request = outReq
 		}
 
-		// 处理压缩的响应体
-		contentType := resp.Header.Get("Content-Type")
-		contentEncoding := resp.Header.Get("Content-Encoding")
-
-		// 对于文本内容（如JSON，XML，HTML等）且有压缩的情况，解压后再返回
-		if isTextContentType(contentType) && contentEncoding != "" {
-			if h.proxy.Verbose {
-				log.Printf("[HTTP/2] 检测到压缩的文本内容: %s, 编码: %s", contentType, contentEncoding)
-			}
-
-			err := decompressBody(resp)
-			if err != nil {
-				log.Printf("[HTTP/2] 解压响应体失败: %v", err)
-				h.proxy.notifyError(err, reqCtx)
-				// 即使解压失败，仍然尝试返回原始内容
-			} else if h.proxy.Verbose {
-				log.Printf("[HTTP/2] 成功解压响应体")
-			}
-		}
-
 		// Log to HAR - 但对于SSE响应，我们需要特殊处理
 		if h.proxy.HarLogger != nil && h.proxy.HarLogger.IsEnabled() {
 			serverIP := ""
@@ -236,6 +216,9 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.proxy.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
 			}
 		}
+
+		// 处理压缩的响应体
+		h.proxy.processCompressedResponse(resp, reqCtx, h.proxy.Verbose)
 
 		// 创建响应上下文
 		respCtx := h.proxy.createResponseContext(reqCtx, resp, timeTaken)
@@ -260,7 +243,7 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Handle SSE response
-			err := h.proxy.handleSSE(w, resp)
+			err := h.proxy.handleSSE(w, respCtx)
 			if err != nil {
 				log.Printf("[SSE] Error handling SSE response: %v", err)
 			}
@@ -321,24 +304,7 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// 处理压缩的响应体
-	contentType := resp.Header.Get("Content-Type")
-	contentEncoding := resp.Header.Get("Content-Encoding")
-
-	// 对于文本内容（如JSON，XML，HTML等）且有压缩的情况，解压后再返回
-	if isTextContentType(contentType) && contentEncoding != "" {
-		if h.proxy.Verbose {
-			log.Printf("[HTTP/2] 检测到压缩的文本内容: %s, 编码: %s", contentType, contentEncoding)
-		}
-
-		err := decompressBody(resp)
-		if err != nil {
-			log.Printf("[HTTP/2] 解压响应体失败: %v", err)
-			h.proxy.notifyError(err, reqCtx)
-			// 即使解压失败，仍然尝试返回原始内容
-		} else if h.proxy.Verbose {
-			log.Printf("[HTTP/2] 成功解压响应体")
-		}
-	}
+	h.proxy.processCompressedResponse(resp, reqCtx, h.proxy.Verbose)
 
 	// 创建响应上下文
 	respCtx := h.proxy.createResponseContext(reqCtx, resp, timeTaken)
@@ -396,7 +362,7 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 对于 SSE 响应，不在这里记录 HAR 条目，而是在 handleSSE 中完成后记录
 
 		// Handle SSE response
-		err := h.proxy.handleSSE(w, resp)
+		err := h.proxy.handleSSE(w, respCtx)
 		if err != nil {
 			log.Printf("[SSE] Error handling SSE response: %v", err)
 		}
