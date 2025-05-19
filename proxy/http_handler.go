@@ -142,24 +142,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 处理压缩的响应体
-		contentType := resp.Header.Get("Content-Type")
-		contentEncoding := resp.Header.Get("Content-Encoding")
-
-		// 对于文本内容（如JSON，XML，HTML等）且有压缩的情况，解压后再返回
-		if isTextContentType(contentType) && contentEncoding != "" {
-			if s.Verbose {
-				log.Printf("[HTTP] 检测到压缩的文本内容: %s, 编码: %s", contentType, contentEncoding)
-			}
-
-			err := decompressBody(resp)
-			if err != nil {
-				log.Printf("[HTTP] 解压响应体失败: %v", err)
-				s.notifyError(err, reqCtx)
-				// 即使解压失败，仍然尝试返回原始内容
-			} else if s.Verbose {
-				log.Printf("[HTTP] 成功解压响应体")
-			}
-		}
+		s.processCompressedResponse(resp, reqCtx, s.Verbose)
 
 		// 创建响应上下文
 		respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
@@ -188,7 +171,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Handle SSE response
-			err := s.handleSSE(w, resp)
+			err := s.handleSSE(w, respCtx)
 			if err != nil {
 				log.Printf("[SSE] Error handling SSE response: %v", err)
 				s.notifyError(err, reqCtx)
@@ -245,6 +228,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		resp.Request = proxyReq
 	}
 
+	// 处理压缩的响应体
+	s.processCompressedResponse(resp, reqCtx, s.Verbose)
+
 	// 创建响应上下文
 	respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
 
@@ -282,7 +268,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Handle SSE response
-		err := s.handleSSE(w, resp)
+		err := s.handleSSE(w, respCtx)
 		if err != nil {
 			log.Printf("[SSE] Error handling SSE response: %v", err)
 			s.notifyError(err, reqCtx)
@@ -295,26 +281,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
-		}
-	}
-
-	// 处理压缩的响应体
-	contentType := resp.Header.Get("Content-Type")
-	contentEncoding := resp.Header.Get("Content-Encoding")
-
-	// 对于文本内容（如JSON，XML，HTML等）且有压缩的情况，解压后再返回
-	if isTextContentType(contentType) && contentEncoding != "" {
-		if s.Verbose {
-			log.Printf("[HTTP] 检测到压缩的文本内容: %s, 编码: %s", contentType, contentEncoding)
-		}
-
-		err := decompressBody(resp)
-		if err != nil {
-			log.Printf("[HTTP] 解压响应体失败: %v", err)
-			s.notifyError(err, reqCtx)
-			// 即使解压失败，仍然尝试返回原始内容
-		} else if s.Verbose {
-			log.Printf("[HTTP] 成功解压响应体")
 		}
 	}
 

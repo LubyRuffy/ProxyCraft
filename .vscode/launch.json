@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
-            "args": ["-mode", "web", "-mitm"]
+            "args": ["-mode", "web", "-mitm", "-v"]
         }
     ]
 }

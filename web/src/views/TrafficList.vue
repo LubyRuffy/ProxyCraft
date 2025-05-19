@@ -175,6 +175,47 @@ onMounted(() => {
   }, 1000);
 });
 
+// SSE刷新定时器
+let sseRefreshTimer: number | null = null;
+
+// 开始SSE详情刷新
+const startSSERefresh = (entryId: string) => {
+  // 如果已经有定时器在运行，先清除
+  if (sseRefreshTimer !== null) {
+    clearInterval(sseRefreshTimer);
+    sseRefreshTimer = null;
+  }
+  
+  // 设置新的定时器，每秒获取一次最新的SSE响应内容
+  sseRefreshTimer = setInterval(() => {
+    if (selectedEntry.value && selectedEntry.value.id === entryId && selectedEntry.value.isSSE) {
+      // 重新加载详情以获取最新的SSE内容
+      websocketService.requestRequestDetails(entryId);
+      websocketService.requestResponseDetails(entryId);
+    } else {
+      // 如果不再查看SSE请求，停止刷新
+      clearInterval(sseRefreshTimer as number);
+      sseRefreshTimer = null;
+    }
+  }, 1000) as unknown as number;
+};
+
+// 停止SSE详情刷新
+const stopSSERefresh = () => {
+  if (sseRefreshTimer !== null) {
+    clearInterval(sseRefreshTimer);
+    sseRefreshTimer = null;
+  }
+};
+
+// 清理定时器
+onUnmounted(() => {
+  document.removeEventListener('mousemove', handleMouseMove);
+  document.removeEventListener('mouseup', stopResize);
+  // 清除SSE刷新定时器
+  stopSSERefresh();
+});
+
 // 设置WebSocket处理器以响应详情
 const setupWebSocketDetailHandlers = () => {
   // 请求详情处理
@@ -219,54 +260,32 @@ const confirmClear = async () => {
   }
 };
 
-// 处理行点击（带防抖功能）
+// 修改handleRowClick函数，增加SSE检测逻辑
 const handleRowClick = (row: TrafficEntry) => {
-  // 如果点击的是相同行且正在加载，则不处理
-  if (row.id === lastClickedId.value && detailLoading.value) {
-    return;
-  }
-  
-  // 清除之前的定时器
-  if (clickDebounceTimer.value !== null) {
+  // 防止重复点击
+  if (clickDebounceTimer.value) {
     clearTimeout(clickDebounceTimer.value);
   }
   
-  // 储存当前点击的ID
-  lastClickedId.value = row.id;
-  
-  // 使用防抖处理点击事件，200毫秒延迟
-  clickDebounceTimer.value = window.setTimeout(() => {
-    detailLoading.value = true;
-    
-    // 直接设置选中行，不等待请求完成
-    store.commit('setSelectedEntry', row);
-    
-    // 发送两个独立的请求，不使用Promise.all来避免类型错误
-    if (websocketService.isConnected()) {
-      // 请求详情数据
+  clickDebounceTimer.value = setTimeout(() => {
+    if (lastClickedId.value !== row.id) {
+      lastClickedId.value = row.id;
+      // 开始加载详情
+      detailLoading.value = true;
+      // 设置被选中的条目
+      store.commit('setSelectedEntry', row);
+      
+      // 请求详情
       websocketService.requestRequestDetails(row.id);
       websocketService.requestResponseDetails(row.id);
       
-      // 设置一个超时，确保加载状态最终会被清除
-      setTimeout(() => {
-        detailLoading.value = false;
-        clickDebounceTimer.value = null;
-      }, 500);
-    } else {
-      // HTTP回退方式请求数据
-      Promise.all([
-        fetch(`/api/traffic/${row.id}/request`).then(r => r.json()),
-        fetch(`/api/traffic/${row.id}/response`).then(r => r.json())
-      ]).then(([reqData, resData]) => {
-        store.commit('setRequestDetails', reqData);
-        store.commit('setResponseDetails', resData);
-      }).catch(() => {
-        store.commit('setRequestDetails', null);
-        store.commit('setResponseDetails', null);
-      }).finally(() => {
-        detailLoading.value = false;
-        clickDebounceTimer.value = null;
-      });
+      // 如果是SSE请求，启动刷新定时器
+      if (row.isSSE) {
+        startSSERefresh(row.id);
+      } else {
+        // 如果不是SSE请求，确保停止任何现有的刷新定时器
+        stopSSERefresh();
+      }
     }
   }, 200);
 };

@@ -194,28 +194,38 @@ func (h *WebHandler) OnResponse(ctx *proxy.ResponseContext) *http.Response {
 		// 更新响应头信息
 		entry.ResponseHeaders = ctx.Response.Header.Clone()
 
-		// 尝试读取响应体内容
-		if ctx.Response.Body != nil {
-			// 创建一个副本来读取，避免消耗掉原始响应体
-			bodyBytes, err := io.ReadAll(ctx.Response.Body)
-			if err != nil {
-				if h.verbose {
-					log.Printf("[WebHandler] Error reading response body: %v", err)
-				}
-			} else {
-				// 保存响应体内容
-				entry.ResponseBody = bodyBytes
-				entry.ContentSize = len(bodyBytes)
-
-				// 重新设置响应体，供后续处理
-				ctx.Response.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		// 检查是否是SSE响应，对SSE响应做特殊处理
+		if ctx.IsSSE {
+			// 对于SSE响应，我们不读取响应体，因为它是流式的
+			entry.ContentType = "text/event-stream"
+			entry.ContentSize = -1 // 表示大小未知
+			if h.verbose {
+				log.Printf("[WebHandler] Skipping body read for SSE response: %s", entry.URL)
 			}
-		}
+		} else {
+			// 非SSE响应，正常读取响应体
+			if ctx.Response.Body != nil {
+				// 创建一个副本来读取，避免消耗掉原始响应体
+				bodyBytes, err := io.ReadAll(ctx.Response.Body)
+				if err != nil {
+					if h.verbose {
+						log.Printf("[WebHandler] Error reading response body: %v", err)
+					}
+				} else {
+					// 保存响应体内容
+					entry.ResponseBody = bodyBytes
+					entry.ContentSize = len(bodyBytes)
 
-		// 更新Content-Type
-		contentType := ctx.Response.Header.Get("Content-Type")
-		if contentType != "" {
-			entry.ContentType = contentType
+					// 重新设置响应体，供后续处理
+					ctx.Response.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				}
+			}
+
+			// 更新Content-Type
+			contentType := ctx.Response.Header.Get("Content-Type")
+			if contentType != "" {
+				entry.ContentType = contentType
+			}
 		}
 
 		if h.verbose {
@@ -291,7 +301,59 @@ func (h *WebHandler) OnTunnelEstablished(host string, isIntercepted bool) {
 
 // OnSSE 实现 EventHandler 接口
 func (h *WebHandler) OnSSE(event string, ctx *proxy.ResponseContext) {
+	// 从上下文中获取ID
+	var id string
+	if ctx != nil && ctx.ReqCtx != nil && ctx.ReqCtx.UserData != nil {
+		if idVal, ok := ctx.ReqCtx.UserData["traffic_id"]; ok {
+			id = idVal.(string)
+		}
+	}
+
+	if id == "" {
+		if h.verbose {
+			log.Println("[WebHandler] Warning: SSE event without request ID")
+		}
+		return
+	}
+
+	// 获取对应的流量条目
+	h.entryMutex.Lock()
+	defer h.entryMutex.Unlock()
+
+	entry, ok := h.entriesMap[id]
+	if !ok {
+		if h.verbose {
+			log.Printf("[WebHandler] Warning: No entry found for SSE event, ID %s", id)
+		}
+		return
+	}
+
+	// 动态更新ResponseBody，累积记录SSE事件内容
+	eventBytes := []byte(event + "\n")
+
+	// 如果之前没有收到过SSE内容，初始化ResponseBody
+	if entry.ResponseBody == nil || entry.ContentSize <= 0 {
+		entry.ResponseBody = eventBytes
+	} else {
+		// 否则追加新的事件内容
+		entry.ResponseBody = append(entry.ResponseBody, eventBytes...)
+	}
+
+	// 更新ContentSize为当前累积的内容大小
+	entry.ContentSize = len(entry.ResponseBody)
+
+	// 确保ContentType设置正确
+	entry.ContentType = "text/event-stream"
+
+	// 更新EndTime为最新事件的时间
+	entry.EndTime = time.Now()
+	entry.Duration = entry.EndTime.Sub(entry.StartTime).Milliseconds()
+
+	// 通知有新的完整流量条目(请求+响应)
+	go h.notifyNewEntry(entry)
+
 	if h.verbose {
-		log.Printf("[WebHandler] SSE event: %s", event)
+		log.Printf("[WebHandler] SSE event: %s, updated entry ID %s, total size %d bytes",
+			event, id, entry.ContentSize)
 	}
 }

@@ -47,12 +47,12 @@ func (t *ResponseBodyTee) GetBuffer() *bytes.Buffer {
 }
 
 // handleSSE handles Server-Sent Events responses
-func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
+func (s *Server) handleSSE(w http.ResponseWriter, respCtx *ResponseContext) error {
 	// 记录开始时间，用于后续的 HAR 记录
 	startTime := time.Now()
 
 	// Set appropriate headers for SSE
-	for k, vv := range resp.Header {
+	for k, vv := range respCtx.Response.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
 		}
@@ -65,7 +65,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 	w.Header().Del("Content-Length") // Remove Content-Length to ensure chunked encoding
 
 	// Set the status code
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(respCtx.Response.StatusCode)
 
 	// Create a flusher if the ResponseWriter supports it
 	flusher, ok := w.(http.Flusher)
@@ -89,37 +89,23 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 	}
 
 	// 创建请求上下文，如果请求有效
-	var reqCtx *RequestContext
-	var respCtx *ResponseContext
-	if resp.Request != nil {
-		// 获取目标 URL
-		targetURL := ""
-		if resp.Request.URL != nil {
-			targetURL = resp.Request.URL.String()
-		}
-
-		reqCtx = s.createRequestContext(resp.Request, targetURL, startTime, false)
-		reqCtx.IsSSE = true
-
-		// 创建响应上下文
-		respCtx = s.createResponseContext(reqCtx, resp, 0) // 在这里 timeTaken 还未计算
-		respCtx.IsSSE = true
-	}
+	respCtx.ReqCtx.IsSSE = true
+	respCtx.IsSSE = true
 
 	// Read and forward SSE events
-	reader := bufio.NewReader(resp.Body)
+	reader := bufio.NewReader(respCtx.Response.Body)
 
 	// 如果启用了流量输出，初始化前缀并输出头部
 	var dumpPrefix string
 	if s.DumpTraffic {
-		dumpPrefix = fmt.Sprintf("[DUMP] %s %s%s -> SSE Stream", resp.Request.Method, resp.Request.Host, resp.Request.URL.RequestURI())
+		dumpPrefix = fmt.Sprintf("[DUMP] %s %s%s -> SSE Stream", respCtx.Response.Request.Method, respCtx.Response.Request.Host, respCtx.Response.Request.URL.RequestURI())
 
 		// 输出响应状态行
-		fmt.Printf("%s %s\n", dumpPrefix, resp.Status)
+		fmt.Printf("%s %s\n", dumpPrefix, respCtx.Response.Status)
 
 		// 输出响应头部
 		fmt.Printf("%s Response Headers:\n", dumpPrefix)
-		for name, values := range resp.Header {
+		for name, values := range respCtx.Response.Header {
 			for _, value := range values {
 				fmt.Printf("%s   %s: %s\n", dumpPrefix, name, value)
 			}
@@ -135,8 +121,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 				break
 			}
 			// 通知错误
-			if reqCtx != nil {
-				s.notifyError(fmt.Errorf("error reading SSE stream: %v", err), reqCtx)
+			if respCtx.ReqCtx != nil {
+				s.notifyError(fmt.Errorf("error reading SSE stream: %v", err), respCtx.ReqCtx)
 			}
 			return fmt.Errorf("error reading SSE stream: %v", err)
 		}
@@ -145,8 +131,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 		_, err = tee.Write(line)
 		if err != nil {
 			// 通知错误
-			if reqCtx != nil {
-				s.notifyError(fmt.Errorf("error writing SSE data: %v", err), reqCtx)
+			if respCtx.ReqCtx != nil {
+				s.notifyError(fmt.Errorf("error writing SSE data: %v", err), respCtx.ReqCtx)
 			}
 			return fmt.Errorf("error writing SSE data: %v", err)
 		}
@@ -176,17 +162,17 @@ func (s *Server) handleSSE(w http.ResponseWriter, resp *http.Response) error {
 
 		// 创建一个新的响应，包含收集到的完整数据
 		newResp := &http.Response{
-			Status:     resp.Status,
-			StatusCode: resp.StatusCode,
-			Header:     resp.Header.Clone(),
+			Status:     respCtx.Response.Status,
+			StatusCode: respCtx.Response.StatusCode,
+			Header:     respCtx.Response.Header.Clone(),
 			Body:       io.NopCloser(bytes.NewReader(tee.GetBuffer().Bytes())),
-			Proto:      resp.Proto,
-			ProtoMajor: resp.ProtoMajor,
-			ProtoMinor: resp.ProtoMinor,
+			Proto:      respCtx.Response.Proto,
+			ProtoMajor: respCtx.Response.ProtoMajor,
+			ProtoMinor: respCtx.Response.ProtoMinor,
 		}
 
 		// 使用原始请求记录 HAR 条目
-		s.logToHAR(resp.Request, newResp, startTime, timeTaken, false) // 这里使用 false 因为我们已经有了完整的数据
+		s.logToHAR(respCtx.Response.Request, newResp, startTime, timeTaken, false) // 这里使用 false 因为我们已经有了完整的数据
 
 		if s.Verbose {
 			log.Printf("[SSE] Recorded complete SSE response in HAR log (%d bytes)", tee.GetBuffer().Len())

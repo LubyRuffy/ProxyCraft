@@ -645,28 +645,7 @@ func (s *Server) tunnelHTTPSResponse(clientConn *tls.Conn, resp *http.Response, 
 	}
 
 	// 处理压缩的响应体
-	contentType := resp.Header.Get("Content-Type")
-	contentEncoding := resp.Header.Get("Content-Encoding")
-
-	// 对于文本内容（如JSON，XML，HTML等）且有压缩的情况，解压后再返回
-	if isTextContentType(contentType) && contentEncoding != "" {
-		if s.Verbose {
-			log.Printf("[HTTPS] 检测到压缩的文本内容: %s, 编码: %s", contentType, contentEncoding)
-		}
-
-		err := decompressBody(resp)
-		if err != nil {
-			log.Printf("[HTTPS] 解压响应体失败: %v", err)
-			s.notifyError(err, reqCtx)
-			// 即使解压失败，仍然尝试返回原始内容
-		} else if s.Verbose {
-			log.Printf("[HTTPS] 成功解压响应体")
-
-			// 更新响应头
-			respHeader.Set("Content-Length", fmt.Sprint(resp.ContentLength))
-			respHeader.Del("Content-Encoding")
-		}
-	}
+	s.processCompressedResponse(resp, reqCtx, s.Verbose)
 
 	// 写入响应状态行
 	statusLine := fmt.Sprintf("%s %s\r\n", resp.Proto, resp.Status)
