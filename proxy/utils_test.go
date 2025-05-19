@@ -331,3 +331,79 @@ func TestServerLogToHAR(t *testing.T) {
 	}
 	disabledServerWithLogger.logToHAR(req, resp, startTime, timeTaken, false)
 }
+
+// TestReadAndRestoreBodyWithTimeout tests the readAndRestoreBody function with timeout edge cases
+func TestReadAndRestoreBodyWithTimeout(t *testing.T) {
+	t.Run("slow_reader_with_non_blocking_buffer", func(t *testing.T) {
+		// 创建一个模拟缓慢读取的reader
+		slowReader := &slowReader{
+			data:  []byte("slow data being read"),
+			delay: 10 * time.Millisecond,
+		}
+
+		body := io.NopCloser(slowReader)
+		data, err := readAndRestoreBody(&body, int64(len(slowReader.data)))
+
+		assert.NoError(t, err)
+		assert.Equal(t, string(slowReader.data), string(data))
+
+		// 确认body被正确恢复
+		restoredData, err := io.ReadAll(body)
+		assert.NoError(t, err)
+		assert.Equal(t, string(slowReader.data), string(restoredData))
+	})
+
+	t.Run("content_length_mismatch_larger_than_actual", func(t *testing.T) {
+		content := "smaller content"
+		body := io.NopCloser(strings.NewReader(content))
+
+		// 指定一个大于实际内容长度的值
+		data, err := readAndRestoreBody(&body, int64(len(content)+10))
+
+		assert.NoError(t, err)
+		assert.Equal(t, content, string(data), "应该只读取可用的数据")
+
+		// 确认body被正确恢复
+		restoredData, err := io.ReadAll(body)
+		assert.NoError(t, err)
+		assert.Equal(t, content, string(restoredData))
+	})
+
+	t.Run("very_large_content_length", func(t *testing.T) {
+		content := "normal content"
+		body := io.NopCloser(strings.NewReader(content))
+
+		// 指定一个非常大的内容长度
+		data, err := readAndRestoreBody(&body, 1000000) // 1MB
+
+		assert.NoError(t, err)
+		assert.Equal(t, content, string(data), "应该只读取可用的数据")
+
+		// 确认body被正确恢复
+		restoredData, err := io.ReadAll(body)
+		assert.NoError(t, err)
+		assert.Equal(t, content, string(restoredData))
+	})
+}
+
+// slowReader 实现了一个模拟缓慢读取的io.Reader
+type slowReader struct {
+	data     []byte
+	position int
+	delay    time.Duration
+}
+
+func (s *slowReader) Read(p []byte) (n int, err error) {
+	if s.position >= len(s.data) {
+		return 0, io.EOF
+	}
+
+	// 模拟读取延迟
+	time.Sleep(s.delay)
+
+	// 每次只读取一个字节，模拟缓慢读取
+	p[0] = s.data[s.position]
+	s.position++
+
+	return 1, nil
+}
