@@ -89,7 +89,7 @@ Failed to start proxy server: listen tcp 127.0.0.1:8080: bind: address already i
 
 3. 或者使用不同的端口启动ProxyCraft：
    ```
-   ./ProxyCraft -mode web -mitm -p 8081
+   ./ProxyCraft -mode web -p 8081
    ```
    注意：此时需要在浏览器中将代理端口也设置为8081
 

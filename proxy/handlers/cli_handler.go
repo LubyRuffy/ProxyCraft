@@ -129,13 +129,7 @@ func (h *CLIHandler) OnError(err error, reqCtx *proxy.RequestContext) {
 // OnTunnelEstablished 实现 EventHandler 接口
 func (h *CLIHandler) OnTunnelEstablished(host string, isIntercepted bool) {
 	h.TunnelCount++
-
-	interceptMode := "Transparent"
-	if isIntercepted {
-		interceptMode = "MITM"
-	}
-
-	log.Printf("[TUN] #%d 与 %s 的隧道已建立 (模式: %s)", h.TunnelCount, host, interceptMode)
+	log.Printf("[TUN] #%d 与 %s 的隧道已建立", h.TunnelCount, host)
 }
 
 // OnSSE 实现 EventHandler 接口

@@ -27,7 +27,7 @@ func (s *Server) handleHTTP2(transport *http.Transport) {
 	}
 }
 
-// handleHTTP2MITM handles HTTP/2 connections in MITM mode
+// handleHTTP2MITM handles HTTP/2 connections
 func (s *Server) handleHTTP2MITM(tlsConn *tls.Conn, connectReq *http.Request) {
 	if s.Verbose {
 		log.Printf("[HTTP/2] Handling HTTP/2 connection for %s", connectReq.Host)
@@ -53,7 +53,7 @@ func (s *Server) handleHTTP2MITM(tlsConn *tls.Conn, connectReq *http.Request) {
 	})
 }
 
-// http2MITMConn is a connection wrapper for HTTP/2 MITM
+// http2MITMConn is a connection wrapper for HTTP/2
 type http2MITMConn struct {
 	server      *http2.Server
 	conn        *tls.Conn

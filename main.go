@@ -143,7 +143,6 @@ func main() {
 		CertManager:   certManager,
 		Verbose:       cfg.Verbose,
 		HarLogger:     harLogger,
-		EnableMITM:    cfg.EnableMITM,
 		UpstreamProxy: upstreamProxyURL,
 		DumpTraffic:   cfg.DumpTraffic,
 		EventHandler:  eventHandler,
@@ -158,16 +157,11 @@ func main() {
 	}
 
 	// Log MITM mode status
-	if cfg.EnableMITM {
-		log.Printf("MITM mode enabled - HTTPS traffic will be decrypted and inspected")
-		log.Printf("Make sure to add the CA certificate to your browser/system trust store")
-		log.Printf("You can export the CA certificate using the -export-ca flag")
-		log.Printf("CA certificate is located at: %s", certs.GetCACertPath())
-		log.Printf("For curl, you can use: curl --cacert %s --proxy http://%s https://example.com", certs.GetCACertPath(), listenAddr)
-	} else {
-		log.Printf("MITM mode disabled - HTTPS traffic will be tunneled directly (no inspection)")
-		log.Printf("To enable MITM mode, use the -mitm flag")
-	}
+	log.Printf("MITM mode enabled - HTTPS traffic will be decrypted and inspected")
+	log.Printf("Make sure to add the CA certificate to your browser/system trust store")
+	log.Printf("You can export the CA certificate using the -export-ca flag")
+	log.Printf("CA certificate is located at: %s", certs.GetCACertPath())
+	log.Printf("For curl, you can use: curl --cacert %s --proxy http://%s https://example.com", certs.GetCACertPath(), listenAddr)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

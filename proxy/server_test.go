@@ -20,42 +20,30 @@ func TestNewServer(t *testing.T) {
 	testCases := []struct {
 		name        string
 		addr        string
-		enableMITM  bool
 		verbose     bool
 		dumpTraffic bool
 	}{
 		{
-			name:        "基本配置",
+			name:        "基本模式",
 			addr:        "127.0.0.1:0",
-			enableMITM:  false,
-			verbose:     false,
-			dumpTraffic: false,
-		},
-		{
-			name:        "MITM模式",
-			addr:        "127.0.0.1:0",
-			enableMITM:  true,
 			verbose:     false,
 			dumpTraffic: false,
 		},
 		{
 			name:        "详细日志模式",
 			addr:        "127.0.0.1:0",
-			enableMITM:  false,
 			verbose:     true,
 			dumpTraffic: false,
 		},
 		{
 			name:        "流量转储模式",
 			addr:        "127.0.0.1:0",
-			enableMITM:  false,
 			verbose:     false,
 			dumpTraffic: true,
 		},
 		{
 			name:        "全部功能启用",
 			addr:        "127.0.0.1:0",
-			enableMITM:  true,
 			verbose:     true,
 			dumpTraffic: true,
 		},
@@ -69,7 +57,6 @@ func TestNewServer(t *testing.T) {
 				certMgr,
 				tc.verbose,
 				harLog,
-				tc.enableMITM,
 				nil, // 不使用上游代理
 				tc.dumpTraffic,
 			)
@@ -77,7 +64,6 @@ func TestNewServer(t *testing.T) {
 			// 验证服务器属性
 			assert.NotNil(t, server)
 			assert.Equal(t, tc.addr, server.Addr)
-			assert.Equal(t, tc.enableMITM, server.EnableMITM)
 			assert.Equal(t, tc.verbose, server.Verbose)
 			assert.Equal(t, tc.dumpTraffic, server.DumpTraffic)
 			assert.NotNil(t, server.HarLogger)
@@ -97,7 +83,6 @@ func TestLogToHAR(t *testing.T) {
 		certMgr,
 		true,
 		harLog,
-		false,
 		nil,
 		false,
 	)
@@ -144,7 +129,6 @@ func TestServerStart(t *testing.T) {
 		certMgr,
 		false,
 		harLog,
-		false,
 		nil,
 		false,
 	)

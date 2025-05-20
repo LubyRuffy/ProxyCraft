@@ -23,107 +23,6 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		hostPort = hostPort + ":443" // 默认HTTPS端口
 	}
 
-	// 直接隧道模式 - 不使用MITM
-	if !s.EnableMITM {
-		// 通知隧道建立事件
-		s.notifyTunnelEstablished(hostPort, false)
-
-		// 劫持客户端连接
-		hijacker, ok := w.(http.Hijacker)
-		if !ok {
-			log.Println("Hijacking not supported")
-			http.Error(w, "hijacking not supported", http.StatusInternalServerError)
-			return
-		}
-		clientConn, clientWriter, err := hijacker.Hijack()
-		if err != nil {
-			log.Printf("Error hijacking connection: %v", err)
-			http.Error(w, "error hijacking connection", http.StatusInternalServerError)
-			return
-		}
-		defer clientConn.Close()
-
-		var targetConn net.Conn
-
-		// 检查是否使用上层代理
-		if s.UpstreamProxy != nil && s.UpstreamProxy.Scheme != "" {
-			// 通过上层代理连接
-			if s.Verbose {
-				log.Printf("[HTTPS] Using upstream proxy %s for connection to %s", s.UpstreamProxy.String(), hostPort)
-			}
-
-			// 连接到上层代理
-			proxyConn, err := net.DialTimeout("tcp", s.UpstreamProxy.Host, 10*time.Second)
-			if err != nil {
-				log.Printf("Error connecting to upstream proxy %s: %v", s.UpstreamProxy.Host, err)
-				http.Error(w, fmt.Sprintf("无法连接到上层代理服务器: %v", err), http.StatusBadGateway)
-				return
-			}
-
-			// 发送CONNECT请求到上层代理
-			connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", hostPort, hostPort)
-			if _, err := proxyConn.Write([]byte(connectReq)); err != nil {
-				log.Printf("Error sending CONNECT request to upstream proxy: %v", err)
-				proxyConn.Close()
-				http.Error(w, fmt.Sprintf("无法发送CONNECT请求到上层代理: %v", err), http.StatusBadGateway)
-				return
-			}
-
-			// 读取上层代理的响应
-			bufReader := bufio.NewReader(proxyConn)
-			resp, err := http.ReadResponse(bufReader, &http.Request{Method: "CONNECT"})
-			if err != nil {
-				log.Printf("Error reading response from upstream proxy: %v", err)
-				proxyConn.Close()
-				http.Error(w, fmt.Sprintf("无法读取上层代理响应: %v", err), http.StatusBadGateway)
-				return
-			}
-
-			// 检查上层代理的响应状态
-			if resp.StatusCode != http.StatusOK {
-				log.Printf("Upstream proxy responded with non-200 status: %d %s", resp.StatusCode, resp.Status)
-				proxyConn.Close()
-				http.Error(w, fmt.Sprintf("上层代理返回错误状态: %d %s", resp.StatusCode, resp.Status), http.StatusBadGateway)
-				return
-			}
-
-			// 使用上层代理连接作为目标连接
-			targetConn = proxyConn
-			if s.Verbose {
-				log.Printf("[HTTPS] Successfully established connection to %s via upstream proxy", hostPort)
-			}
-		} else {
-			// 直接连接到目标服务器
-			targetConn, err = net.DialTimeout("tcp", hostPort, 10*time.Second)
-			if err != nil {
-				log.Printf("Error connecting to target server %s: %v", hostPort, err)
-				http.Error(w, fmt.Sprintf("无法连接到目标服务器: %v", err), http.StatusBadGateway)
-				return
-			}
-		}
-		defer targetConn.Close()
-
-		// 发送200 OK响应给客户端
-		responseStr := r.Proto + " 200 Connection Established\r\n\r\n"
-		if _, err := clientWriter.WriteString(responseStr); err != nil {
-			log.Printf("Error writing 200 response: %v", err)
-			return
-		}
-		if err := clientWriter.Flush(); err != nil {
-			log.Printf("Error flushing response: %v", err)
-			return
-		}
-
-		// 创建双向数据转发
-		log.Printf("Establishing tunnel to %s", hostPort)
-		go func() {
-			_, _ = io.Copy(targetConn, clientConn)
-		}()
-		_, _ = io.Copy(clientConn, targetConn)
-		return
-	}
-
-	// 以下是MITM模式的处理逻辑
 	// 通知隧道建立事件
 	s.notifyTunnelEstablished(hostPort, true)
 
@@ -153,7 +52,6 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 以下是MITM模式的处理逻辑
 	// 生成服务器证书
 	// Extract hostname without port for certificate generation
 	hostname := r.Host

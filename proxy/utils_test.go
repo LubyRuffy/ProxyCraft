@@ -283,10 +283,9 @@ func TestServerLogToHAR(t *testing.T) {
 
 	// 创建代理服务器 - 启用HarLogger
 	server := &Server{
-		Addr:       "127.0.0.1:0",
-		Verbose:    true,
-		HarLogger:  harLog,
-		EnableMITM: true,
+		Addr:      "127.0.0.1:0",
+		Verbose:   true,
+		HarLogger: harLog,
 	}
 
 	// 创建测试请求
@@ -314,10 +313,9 @@ func TestServerLogToHAR(t *testing.T) {
 
 	// 测试场景4: HarLogger未启用
 	disabledServer := &Server{
-		Addr:       "127.0.0.1:0",
-		Verbose:    true,
-		HarLogger:  nil, // HarLogger为nil
-		EnableMITM: true,
+		Addr:      "127.0.0.1:0",
+		Verbose:   true,
+		HarLogger: nil, // HarLogger为nil
 	}
 	disabledServer.logToHAR(req, resp, startTime, timeTaken, false)
 
@@ -326,10 +324,9 @@ func TestServerLogToHAR(t *testing.T) {
 	disabledHarLog := harlogger.NewLogger("", "ProxyCraft Test", "0.1.0")
 
 	disabledServerWithLogger := &Server{
-		Addr:       "127.0.0.1:0",
-		Verbose:    true,
-		HarLogger:  disabledHarLog,
-		EnableMITM: true,
+		Addr:      "127.0.0.1:0",
+		Verbose:   true,
+		HarLogger: disabledHarLog,
 	}
 	disabledServerWithLogger.logToHAR(req, resp, startTime, timeTaken, false)
 }

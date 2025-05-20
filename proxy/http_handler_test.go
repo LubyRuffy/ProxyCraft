@@ -63,7 +63,6 @@ func TestServerHTTPHandlers(t *testing.T) {
 					certMgr,
 					true, // 启用详细日志
 					harLog,
-					false,
 					nil, // 不使用上游代理
 					false,
 				)
@@ -87,7 +86,6 @@ func TestServerHTTPHandlers(t *testing.T) {
 					certMgr,
 					true,
 					harLog,
-					false,
 					nil,
 					false,
 				)
@@ -118,7 +116,6 @@ func TestServerHTTPHandlers(t *testing.T) {
 					certMgr,
 					true,
 					harLog,
-					false,
 					nil,
 					false,
 				)
@@ -146,7 +143,6 @@ func TestServerHTTPHandlers(t *testing.T) {
 					certMgr,
 					true,
 					harLog,
-					false,
 					nil,
 					false,
 				)
@@ -170,7 +166,6 @@ func TestServerHTTPHandlers(t *testing.T) {
 					certMgr,
 					true,
 					harLog,
-					false,
 					nil,
 					true, // 启用流量输出
 				)
@@ -194,7 +189,6 @@ func TestServerHTTPHandlers(t *testing.T) {
 					certMgr,
 					true,
 					harLog,
-					false,
 					nil,
 					false,
 				)
@@ -220,7 +214,6 @@ func TestServerHTTPHandlers(t *testing.T) {
 					certMgr,
 					true,
 					harLog,
-					false,
 					nil,
 					false,
 				)
@@ -284,7 +277,6 @@ func TestServerWithDumpTraffic(t *testing.T) {
 		certMgr,
 		true,
 		harLog,
-		false,
 		nil,
 		true, // 启用流量转储
 	)
@@ -358,7 +350,6 @@ func TestServerWithUpstreamProxy(t *testing.T) {
 		certMgr,
 		true,
 		harLog,
-		false,
 		upstreamURL,
 		false,
 	)
@@ -446,7 +437,7 @@ func TestHandleHTTPErrorCases(t *testing.T) {
 		{
 			name: "创建请求错误",
 			setupProxy: func() *Server {
-				return NewServer(proxyAddr, certMgr, true, harLog, false, nil, false)
+				return NewServer(proxyAddr, certMgr, true, harLog, nil, false)
 			},
 			setupRequest: func() (*http.Request, http.ResponseWriter) {
 				// 手动创建请求而不是使用httptest.NewRequest，以避免解析URL时的panic
@@ -473,7 +464,7 @@ func TestHandleHTTPErrorCases(t *testing.T) {
 		{
 			name: "处理大量数据",
 			setupProxy: func() *Server {
-				return NewServer(proxyAddr, certMgr, true, harLog, false, nil, true) // 启用流量输出
+				return NewServer(proxyAddr, certMgr, true, harLog, nil, true) // 启用流量输出
 			},
 			setupRequest: func() (*http.Request, http.ResponseWriter) {
 				req := httptest.NewRequest("GET", testServer.URL+"/large-response", nil)

@@ -43,9 +43,6 @@ go build -o proxycraft
 # 指定监听地址和端口
 ./proxycraft -l 0.0.0.0 -p 9090
 
-# 启用 MITM 模式（解密 HTTPS 流量）
-./proxycraft -mitm
-
 # 启用详细输出
 ./proxycraft -v
 
@@ -91,7 +88,6 @@ curl --cacert proxycraft-ca.pem --proxy http://127.0.0.1:8080 https://example.co
 -export-ca string        Export the root CA certificate to FILEPATH and exit
 -use-ca string           Use custom root CA certificate from CERT_PATH
 -use-key string          Use custom root CA private key from KEY_PATH
--mitm                    Enable MITM mode for HTTPS traffic inspection
 -upstream-proxy string   Upstream proxy URL (e.g., "http://proxy.example.com:8080")
 -h, -help                Show this help message and exit
 ```
@@ -100,14 +96,11 @@ curl --cacert proxycraft-ca.pem --proxy http://127.0.0.1:8080 https://example.co
 
 ### HTTP/HTTPS 代理
 
-ProxyCraft 作为标准的 HTTP 代理服务器运行，可以处理 HTTP 和 HTTPS 流量。对于 HTTPS 流量，有两种模式：
-
-1. **隧道模式**（默认）：仅建立连接隧道，不解密流量
-2. **MITM 模式**（使用 `-mitm` 参数）：解密 HTTPS 流量，允许检查内容
+ProxyCraft 作为标准的 HTTP 代理服务器运行，可以处理 HTTP 和 HTTPS 流量。
 
 ### HTTP/2 支持
 
-当启用 MITM 模式时，ProxyCraft 能够处理 HTTP/2 流量，包括：
+ProxyCraft 能够处理 HTTP/2 流量，包括：
 
 - 通过 ALPN 进行 HTTP/2 协议协商
 - 支持 HTTP/2 的帧和流处理
@@ -192,8 +185,6 @@ ProxyCraft 支持通过上层代理转发请求，这在以下场景中非常有
 - HTTPS代理：`https://proxy.example.com:8443`
 - SOCKS5代理：`socks5://proxy.example.com:1080`
 
-上层代理支持在所有模式下工作，包括直接隧道模式和 MITM 模式。
-
 ## 目标用户
 
 - **Web 开发人员**：调试客户端与服务器之间的通信，理解 API 调用，分析 SSE 流
@@ -218,7 +209,7 @@ ProxyCraft现在支持Web界面模式，可以在浏览器中查看和分析HTTP
 要以Web模式启动ProxyCraft，请使用`-mode web`参数：
 
 ```bash
-./ProxyCraft -mode web -mitm
+./ProxyCraft -mode web
 ```
 
 启动后，Web界面默认可在 http://localhost:8081 访问。
@@ -231,7 +222,7 @@ Web界面提供以下功能：
 - 请求列表支持按方法、主机、路径等字段排序和过滤
 - 详细查看请求和响应的头部和内容
 - 自动刷新功能，实时显示新捕获的流量
-- 支持HTTPS流量的查看（需启用MITM模式）
+- 支持HTTPS流量的查看
 - 支持SSE (Server-Sent Events) 流量的特殊标记
 
 ### 界面使用说明
