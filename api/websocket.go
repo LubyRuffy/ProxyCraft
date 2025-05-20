@@ -36,6 +36,31 @@ const (
 	EventResponseDetails = "response_details"  // 响应详情
 )
 
+// getJsonValue 从interface{}中获取指定字段的值
+func getJsonValue(data interface{}, key string) interface{} {
+	if data == nil {
+		return nil
+	}
+
+	// 如果是map类型，直接获取
+	if m, ok := data.(map[string]interface{}); ok {
+		return m[key]
+	}
+
+	// 尝试将data解析为map
+	jsonStr, err := json.Marshal(data)
+	if err != nil {
+		return nil
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(jsonStr, &result); err != nil {
+		return nil
+	}
+
+	return result[key]
+}
+
 // NewWebSocketServer 创建一个新的WebSocket服务器
 func NewWebSocketServer(webHandler *handlers.WebHandler) (*WebSocketServer, error) {
 	// 创建一个新的 socket.io 服务器
@@ -43,14 +68,14 @@ func NewWebSocketServer(webHandler *handlers.WebHandler) (*WebSocketServer, erro
 		Transports: []transport.Transport{
 			&websocket.Transport{
 				CheckOrigin: func(r *http.Request) bool {
-					log.Printf("WebSocket websocket 来源检查: %s", r.Header.Get("Origin"))
+					log.Printf("WebSocket 来源检查: %s", r.Header.Get("Origin"))
 					return true // 允许所有来源的请求，生产环境中应当限制
 				},
 			},
 		},
-		// 调整超时时间和心跳间隔，解决频繁断开问题
-		PingTimeout:  30 * time.Second, // 增加到30秒
-		PingInterval: 40 * time.Second, // 增加到40秒，必须大于PingTimeout
+		// 大幅增加超时时间和心跳间隔，与前端设置一致
+		PingTimeout:  90 * time.Second, // 增加到90秒，避免意外断开
+		PingInterval: 60 * time.Second, // 增加到60秒，必须小于PingTimeout
 	})
 
 	ws := &WebSocketServer{
@@ -195,6 +220,20 @@ func (ws *WebSocketServer) setupEventHandlers() {
 		log.Printf("接收到ping请求, 客户端: %s", s.ID())
 		s.Emit("pong", "pong")
 	})
+
+	// 处理客户端心跳事件
+	ws.Server.OnEvent("/", "heartbeat", func(s socketio.Conn, data interface{}) {
+		// 解析客户端发送的心跳数据，并以相同格式返回
+		// 减少日志输出，避免日志过多
+		// log.Printf("接收到心跳请求, 客户端: %s", s.ID())
+
+		// 返回心跳响应
+		s.Emit("heartbeat-response", map[string]interface{}{
+			"serverTime": time.Now().UnixNano() / int64(time.Millisecond),
+			"received":   true,
+			"counter":    getJsonValue(data, "counter"), // 返回相同的计数器
+		})
+	})
 }
 
 // formatRequestDetails 格式化请求详情
@@ -290,9 +329,9 @@ func (ws *WebSocketServer) BroadcastClearTraffic() {
 // Start 启动WebSocket服务器
 func (ws *WebSocketServer) Start() {
 	// 打印WebSocket服务器配置
-	log.Printf("正在启动WebSocket服务器，配置信息: PingTimeout=30s, PingInterval=40s")
+	log.Printf("正在启动WebSocket服务器，配置信息: PingTimeout=90s, PingInterval=60s")
 
-	// 启动server.io服务器
+	// 启动socket.io服务器
 	go func() {
 		log.Printf("WebSocket服务器goroutine启动")
 		if err := ws.Server.Serve(); err != nil {
