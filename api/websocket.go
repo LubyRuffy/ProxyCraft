@@ -100,33 +100,8 @@ func (ws *WebSocketServer) setupEventHandlers() {
 		ws.mu.Unlock()
 
 		log.Printf("WebSocket 客户端已连接: %s (当前连接数: %d)", s.ID(), clientCount)
-
-		// 异步发送当前所有流量条目，避免阻塞连接处理
-		go func() {
-			// 给客户端连接一点时间
-			time.Sleep(100 * time.Millisecond)
-
-			// 创建一个带超时的通道来获取条目
-			entriesChan := make(chan []*handlers.TrafficEntry, 1)
-
-			// 在新的goroutine中获取条目
-			go func() {
-				entries := ws.WebHandler.GetEntries()
-				entriesChan <- entries
-			}()
-
-			// 设置5秒超时
-			select {
-			case entries := <-entriesChan:
-				// 成功获取条目
-				s.Emit(EventTrafficEntries, entries)
-				log.Printf("连接时发送所有流量条目到客户端: %s, 条目数: %d", s.ID(), len(entries))
-			case <-time.After(5 * time.Second):
-				// 超时处理
-				log.Printf("连接时获取流量条目超时, 客户端: %s", s.ID())
-				s.Emit("error", map[string]string{"message": "获取流量条目超时，请重试或刷新页面"})
-			}
-		}()
+		// 不再自动发送流量条目，等待客户端主动请求
+		// 客户端将在连接成功后通过 traffic_entries 事件请求数据
 
 		return nil
 	})

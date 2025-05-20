@@ -7,7 +7,7 @@ export enum WebSocketEvent {
   DISCONNECT = 'disconnect',
   CONNECT_ERROR = 'connect_error',
   TRAFFIC_ENTRIES = 'traffic_entries',
-  TRAFFIC_NEW_ENTRY = 'traffic_new_entry', 
+  TRAFFIC_NEW_ENTRY = 'traffic_new_entry',
   TRAFFIC_CLEAR = 'traffic_clear',
   REQUEST_DETAILS = 'request_details',
   RESPONSE_DETAILS = 'response_details'
@@ -30,7 +30,7 @@ class WebSocketService {
   private socket: any = null;
   private url: string = '';
   private reconnectTimer: number | null = null;
-  
+
   /**
    * 初始化WebSocket连接
    * @param url 服务器URL，默认为http://localhost:8081
@@ -38,12 +38,12 @@ class WebSocketService {
   public init(url: string = 'http://localhost:8081'): void {
     // 如果已经有socket实例，先清理
     this.cleanup();
-    
+
     // 保存URL
     this.url = url;
-    
+
     console.log('初始化WebSocket连接...');
-    
+
     // 创建socket实例，采用最简单稳定的配置
     this.socket = io(this.url, {
       transports: ['websocket'],
@@ -54,9 +54,9 @@ class WebSocketService {
       timeout: 20000,            // 连接超时20秒
       autoConnect: true          // 自动连接
     });
-    
+
     this.attachEventHandlers();
-    
+
     // 测试连接，如果5秒内没有连接成功，尝试强制重连
     setTimeout(() => {
       if (this.socket && !this.socket.connected) {
@@ -65,7 +65,7 @@ class WebSocketService {
       }
     }, 5000);
   }
-  
+
   /**
    * 连接WebSocket
    */
@@ -74,13 +74,13 @@ class WebSocketService {
       this.init();
       return;
     }
-    
+
     if (!this.socket.connected) {
       console.log('尝试连接WebSocket...');
       this.socket.connect();
     }
   }
-  
+
   /**
    * 断开WebSocket连接
    */
@@ -89,28 +89,28 @@ class WebSocketService {
       console.log('断开WebSocket连接');
       this.socket.disconnect();
     }
-    
+
     this.cleanup();
   }
-  
+
   /**
    * 重新连接WebSocket
    */
   public reconnect(): void {
     console.log('重新连接WebSocket');
     this.disconnect();
-    
+
     // 防止短时间内多次重连
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
     }
-    
+
     this.reconnectTimer = window.setTimeout(() => {
       this.init(this.url);
       this.reconnectTimer = null;
     }, 1000);
   }
-  
+
   /**
    * 清理资源
    */
@@ -119,7 +119,7 @@ class WebSocketService {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    
+
     if (this.socket) {
       try {
         this.socket.offAny(); // 移除所有事件监听
@@ -130,56 +130,65 @@ class WebSocketService {
       this.socket = null;
     }
   }
-  
+
   /**
    * 添加事件处理器
    */
   private attachEventHandlers(): void {
     if (!this.socket) return;
-    
+
     // 连接成功事件
     this.socket.on(WebSocketEvent.CONNECT, () => {
       console.log('WebSocket连接成功, ID:', this.socket?.id, '传输方式:', this.getTransport());
     });
-    
+
     // 连接错误事件
     this.socket.on(WebSocketEvent.CONNECT_ERROR, (error: Error) => {
       console.error('WebSocket连接错误:', error.message);
     });
-    
+
     // 断开连接事件
     this.socket.on(WebSocketEvent.DISCONNECT, (reason: string) => {
       console.log(`WebSocket断开连接, 原因:`, reason);
     });
-    
+
     // 监听重连尝试
     this.socket.io.on('reconnect_attempt', (attempt: number) => {
       console.log(`WebSocket尝试重连 (${attempt})`);
     });
-    
+
     // 重连成功
     this.socket.io.on('reconnect', (attempt: number) => {
       console.log(`WebSocket重连成功，经过${attempt}次尝试`);
     });
   }
-  
+
+  // 用于跟踪是否已经请求过流量条目
+  private hasRequestedEntries: boolean = false;
+
   /**
    * 请求所有流量条目
+   * @param force 是否强制请求，即使已经请求过
    */
-  public requestTrafficEntries(): void {
+  public requestTrafficEntries(force: boolean = false): void {
+    // 如果已经请求过且不是强制请求，则跳过
+    if (this.hasRequestedEntries && !force) {
+      console.log('已经请求过流量条目，跳过重复请求');
+      return;
+    }
+
     if (this.socket && this.socket.connected) {
       console.log('请求所有流量条目');
       this.socket.emit(WebSocketEvent.TRAFFIC_ENTRIES);
+      this.hasRequestedEntries = true;
     } else {
       console.warn('WebSocket未连接，首先尝试连接...');
       this.connect();
       // 连接成功后会自动请求流量条目
-      this.onConnect(() => {
-        this.requestTrafficEntries();
-      });
+      // 不需要在这里添加回调，因为 store 中的 initWebSocket 已经处理了
     }
   }
-  
+
   /**
    * 请求请求详情
    */
@@ -190,7 +199,7 @@ class WebSocketService {
       console.warn('WebSocket未连接，无法获取请求详情');
     }
   }
-  
+
   /**
    * 请求响应详情
    */
@@ -201,7 +210,7 @@ class WebSocketService {
       console.warn('WebSocket未连接，无法获取响应详情');
     }
   }
-  
+
   /**
    * 请求清空流量条目
    */
@@ -212,7 +221,7 @@ class WebSocketService {
       console.warn('WebSocket未连接，无法清空流量');
     }
   }
-  
+
   /**
    * 订阅连接事件
    */
@@ -221,7 +230,7 @@ class WebSocketService {
       this.socket.on(WebSocketEvent.CONNECT, callback);
     }
   }
-  
+
   /**
    * 订阅断开连接事件
    */
@@ -230,7 +239,7 @@ class WebSocketService {
       this.socket.on(WebSocketEvent.DISCONNECT, callback);
     }
   }
-  
+
   /**
    * 订阅连接错误事件
    */
@@ -239,7 +248,7 @@ class WebSocketService {
       this.socket.on(WebSocketEvent.CONNECT_ERROR, callback);
     }
   }
-  
+
   /**
    * 订阅流量条目事件
    */
@@ -248,7 +257,7 @@ class WebSocketService {
       this.socket.on(WebSocketEvent.TRAFFIC_ENTRIES, callback);
     }
   }
-  
+
   /**
    * 订阅新流量条目事件
    */
@@ -257,7 +266,7 @@ class WebSocketService {
       this.socket.on(WebSocketEvent.TRAFFIC_NEW_ENTRY, callback);
     }
   }
-  
+
   /**
    * 订阅清空流量条目事件
    */
@@ -266,7 +275,7 @@ class WebSocketService {
       this.socket.on(WebSocketEvent.TRAFFIC_CLEAR, callback);
     }
   }
-  
+
   /**
    * 订阅请求详情事件
    */
@@ -275,7 +284,7 @@ class WebSocketService {
       this.socket.on(WebSocketEvent.REQUEST_DETAILS, callback);
     }
   }
-  
+
   /**
    * 订阅响应详情事件
    */
@@ -284,7 +293,7 @@ class WebSocketService {
       this.socket.on(WebSocketEvent.RESPONSE_DETAILS, callback);
     }
   }
-  
+
   /**
    * 取消订阅所有事件
    */
@@ -293,14 +302,14 @@ class WebSocketService {
       this.socket.offAny();
     }
   }
-  
+
   /**
    * 检查连接状态
    */
   public isConnected(): boolean {
     return this.socket ? this.socket.connected : false;
   }
-  
+
   /**
    * 获取连接方式
    */
@@ -308,7 +317,7 @@ class WebSocketService {
     if (!this.socket || !this.socket.connected) {
       return '未连接';
     }
-    
+
     try {
       return this.socket.io.engine && this.socket.io.engine.transport
         ? this.socket.io.engine.transport.name
@@ -317,7 +326,7 @@ class WebSocketService {
       return '未知';
     }
   }
-  
+
   /**
    * 获取连接状态信息
    */
@@ -333,4 +342,4 @@ class WebSocketService {
 
 // 导出单例实例
 export const websocketService = new WebSocketService();
-export default websocketService; 
+export default websocketService;
