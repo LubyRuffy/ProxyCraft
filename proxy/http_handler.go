@@ -13,11 +13,7 @@ import (
 
 // handleHTTP is the handler for all incoming HTTP requests
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.Verbose {
-		log.Printf("[HTTP] Received request: %s %s %s %s", r.Method, r.Host, r.URL.String(), r.Proto)
-	} else {
-		log.Printf("[HTTP] %s %s%s", r.Method, r.Host, r.URL.RequestURI())
-	}
+	log.Printf("[HTTP] Received request: %s %s %s %s", r.Method, r.Host, r.URL.String(), r.Proto)
 
 	if r.Method == http.MethodConnect {
 		s.handleHTTPS(w, r)

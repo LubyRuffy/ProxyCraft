@@ -130,11 +130,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			break // Exit loop on error or EOF
 		}
 
-		if s.Verbose {
-			log.Printf("[MITM for %s] Received tunneled request: %s %s%s %s", r.Host, tunneledReq.Method, tunneledReq.Host, tunneledReq.URL.String(), tunneledReq.Proto)
-		} else {
-			log.Printf("[MITM for %s] %s %s%s", r.Host, tunneledReq.Method, tunneledReq.Host, tunneledReq.URL.RequestURI())
-		}
+		log.Printf("[MITM for %s] Received tunneled request: %s %s%s %s", r.Host, tunneledReq.Method, tunneledReq.Host, tunneledReq.URL.String(), tunneledReq.Proto)
 
 		// Prepare the outgoing request to the actual target server
 		targetHost := r.Host
