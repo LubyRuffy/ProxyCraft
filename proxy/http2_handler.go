@@ -3,7 +3,6 @@ package proxy
 import (
 	"crypto/tls"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -267,15 +266,13 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Set the status code
 			w.WriteHeader(resp.StatusCode)
 
-			// Copy the body from target server's response to our response writer
-			written, err := io.Copy(w, resp.Body)
+			// 使用通用的流式传输函数处理响应
+			contentType := resp.Header.Get("Content-Type")
+			written, err := h.proxy.streamResponse(resp.Body, w, contentType, h.proxy.Verbose)
 			if err != nil {
-				log.Printf("[HTTP/2] Error copying response body: %v", err)
-				// Don't send http.Error here as headers might have already been written
-			}
-
-			if h.proxy.Verbose {
-				log.Printf("[HTTP/2] Copied %d bytes for response body from %s", written, targetURL.String())
+				log.Printf("[HTTP/2] Error streaming response: %v", err)
+			} else if h.proxy.Verbose {
+				log.Printf("[HTTP/2] Processed %d bytes for response body from %s", written, targetURL.String())
 			}
 			return
 		}
@@ -386,14 +383,12 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Set the status code
 	w.WriteHeader(resp.StatusCode)
 
-	// Copy the body from target server's response to our response writer
-	written, err := io.Copy(w, resp.Body)
+	// 使用通用的流式传输函数处理响应
+	contentType := resp.Header.Get("Content-Type")
+	written, err := h.proxy.streamResponse(resp.Body, w, contentType, h.proxy.Verbose)
 	if err != nil {
-		log.Printf("[HTTP/2] Error copying response body: %v", err)
-		// Don't send http.Error here as headers might have already been written
-	}
-
-	if h.proxy.Verbose {
-		log.Printf("[HTTP/2] Copied %d bytes for response body from %s", written, targetURL.String())
+		log.Printf("[HTTP/2] Error streaming response: %v", err)
+	} else if h.proxy.Verbose {
+		log.Printf("[HTTP/2] Processed %d bytes for response body from %s", written, targetURL.String())
 	}
 }

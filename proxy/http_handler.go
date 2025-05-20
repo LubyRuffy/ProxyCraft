@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -215,7 +214,13 @@ func (s *Server) handleProxyRequest(
 	w.Header().Add("X-Protocol", r.Proto)
 
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+
+	// 使用通用的流式传输函数处理响应
+	contentType := resp.Header.Get("Content-Type")
+	_, err = s.streamResponse(resp.Body, w, contentType, s.Verbose)
+	if err != nil {
+		log.Printf("[Proxy] Error streaming response: %v", err)
+	}
 }
 
 // isTextContentType 判断Content-Type是否为文本类型
