@@ -32,7 +32,7 @@ class WebSocketService {
   private maxReconnectAttempts: number = 5;
   
   // 初始化WebSocket连接
-  public init(url: string = ''): void {
+  public init(url: string = 'http://localhost:8081'): void {
     if (this.socket) {
       this.disconnect();
     }

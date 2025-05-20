@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bufio"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -8,8 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"bufio"
-	"crypto/tls"
 )
 
 // handleHTTP is the handler for all incoming HTTP requests
@@ -209,6 +209,10 @@ func (s *Server) handleProxyRequest(
 			w.Header().Add(k, v)
 		}
 	}
+
+	// 添加协议版本头以便前端识别
+	w.Header().Add("X-Protocol", r.Proto)
+
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }

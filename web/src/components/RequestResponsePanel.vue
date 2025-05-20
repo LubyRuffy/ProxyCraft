@@ -242,16 +242,7 @@ onBeforeUnmount(() => {
 const requestMethod = computed(() => props.selectedEntry?.method || 'GET');
 const requestUrl = computed(() => props.selectedEntry?.path || '/');
 const requestProtocol = computed(() => {
-  // 从请求头中获取协议版本
-  if (props.request?.headers) {
-    // 尝试从请求头中读取协议版本
-    const version = getProtocolVersionFromHeaders(props.request.headers);
-    if (version) {
-      return `HTTP/${version}`;
-    }
-  }
-  // 默认值
-  return 'HTTP/1.1';
+  return props.selectedEntry?.protocol || 'HTTP/1.1';
 });
 const requestHasBody = computed(() => {
   // 检查是否存在请求体，且请求体不为空
@@ -283,16 +274,7 @@ const requestHasBody = computed(() => {
 // 提取响应信息
 const responseStatusCode = computed(() => props.selectedEntry?.statusCode || 0);
 const responseProtocol = computed(() => {
-  // 从响应头中获取协议版本
-  if (props.response?.headers) {
-    // 尝试从响应头中读取协议版本
-    const version = getProtocolVersionFromHeaders(props.response.headers);
-    if (version) {
-      return `HTTP/${version}`;
-    }
-  }
-  // 默认值
-  return 'HTTP/1.1';
+  return props.selectedEntry?.protocol || 'HTTP/1.1';
 });
 const responseHasBody = computed(() => {
   // 检查是否存在响应体，且响应体不为空
@@ -351,29 +333,6 @@ const getStatusText = (statusCode: number) => {
   return statusTexts[statusCode] || '';
 };
 
-// 从请求/响应头中获取协议版本
-const getProtocolVersionFromHeaders = (headers: Record<string, string>) => {
-  // 查找可能包含协议版本信息的头
-  // 常见头: Via, Server, etc.
-  if (headers['via']) {
-    // Via头格式通常为: "1.1 proxy-name"，其中1.1是协议版本
-    const match = headers['via'].match(/(\d+\.\d+)/);
-    if (match && match[1]) {
-      return match[1];
-    }
-  }
-  
-  // 检查其他可能包含版本的头
-  if (headers['server']) {
-    const match = headers['server'].match(/HTTP\/(\d+\.\d+)/i);
-    if (match && match[1]) {
-      return match[1];
-    }
-  }
-  
-  // 如果找不到特定的协议版本，默认返回1.1
-  return '1.1';
-};
 
 // 获取十六进制视图
 const getHexView = (data: any): string => {
