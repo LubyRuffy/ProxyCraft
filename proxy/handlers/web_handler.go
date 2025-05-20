@@ -30,6 +30,7 @@ type TrafficEntry struct {
 	ContentType     string      `json:"contentType"`      // 内容类型
 	ContentSize     int         `json:"contentSize"`      // 内容大小
 	IsSSE           bool        `json:"isSSE"`            // 是否为SSE请求
+	IsSSECompleted  bool        `json:"isSSECompleted"`   // SSE请求是否已完成
 	IsHTTPS         bool        `json:"isHTTPS"`          // 是否为HTTPS请求
 	RequestBody     []byte      `json:"-"`                // 请求体
 	ResponseBody    []byte      `json:"-"`                // 响应体
@@ -186,6 +187,7 @@ func (h *WebHandler) GetEntries() []*TrafficEntry {
 			ContentSize:    srcEntry.ContentSize,
 			Protocol:       srcEntry.Protocol,
 			IsSSE:          srcEntry.IsSSE,
+			IsSSECompleted: srcEntry.IsSSECompleted,
 			IsHTTPS:        srcEntry.IsHTTPS,
 			Error:          srcEntry.Error,
 		}
@@ -244,6 +246,7 @@ func (h *WebHandler) OnRequest(ctx *proxy.RequestContext) *http.Request {
 		Path:           ctx.Request.URL.Path,
 		IsHTTPS:        ctx.IsHTTPS,
 		IsSSE:          ctx.IsSSE,
+		IsSSECompleted: false, // 初始化为false，当SSE流结束时会设置为true
 		RequestHeaders: ctx.Request.Header.Clone(),
 	}
 
@@ -534,6 +537,43 @@ func (h *WebHandler) OnSSE(event string, ctx *proxy.ResponseContext) {
 		return
 	}
 
+	// 检查是否是特殊的SSE完成事件
+	if event == "__SSE_COMPLETED__" {
+		// 获取写锁并更新
+		h.entryMutex.Lock()
+
+		// 再次检查entry是否存在
+		entry, stillExists := h.entriesMap[id]
+		if !stillExists {
+			h.entryMutex.Unlock()
+			if h.verbose {
+				log.Printf("[WebHandler] Entry disappeared during SSE completion, ID %s", id)
+			}
+			return
+		}
+
+		// 标记SSE已完成
+		entry.IsSSECompleted = true
+		endTime := time.Now()
+		entry.EndTime = endTime
+		entry.Duration = endTime.Sub(entry.StartTime).Milliseconds()
+
+		// 始终输出日志，不受verbose控制
+		log.Printf("[WebHandler] 标记SSE流已完成，ID: %s, IsSSECompleted: %v", id, entry.IsSSECompleted)
+
+		h.entryMutex.Unlock()
+
+		// 通知有新的完整流量条目(请求+响应)
+		log.Printf("[WebHandler] 广播更新的SSE条目，ID: %s, IsSSECompleted: %v", id, true)
+		go h.notifyNewEntry(entry)
+
+		if h.verbose {
+			log.Printf("[WebHandler] SSE stream completed for entry ID %s", id)
+		}
+		return
+	}
+
+	// 处理正常的SSE事件
 	// 准备更新的数据
 	endTime := time.Now()
 	duration := endTime.Sub(entry.StartTime).Milliseconds()
