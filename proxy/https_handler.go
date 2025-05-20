@@ -165,13 +165,6 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			ExpectContinueTimeout: 1 * time.Second,
 			DisableCompression:    true,
 		}
-		if s.UpstreamProxy != nil {
-			if s.Verbose {
-				log.Printf("[MITM for %s] Using upstream proxy: %s", r.Host, s.UpstreamProxy.String())
-			}
-			transport.Proxy = http.ProxyURL(s.UpstreamProxy)
-		}
-		s.handleHTTP2(transport)
 		// 用统一逻辑处理MITM代理
 		s.handleProxyRequest(nil, tunneledReq, targetURL.String(), transport, true, tlsClientConn)
 	}
