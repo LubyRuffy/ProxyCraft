@@ -64,6 +64,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, respCtx *ResponseContext) erro
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Del("Content-Length") // Remove Content-Length to ensure chunked encoding
 
+	// 添加协议版本头以便前端识别
+	w.Header().Add("X-Protocol", respCtx.Response.Proto)
+
 	// Set the status code
 	w.WriteHeader(respCtx.Response.StatusCode)
 

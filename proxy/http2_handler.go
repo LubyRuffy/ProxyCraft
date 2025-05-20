@@ -261,6 +261,9 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			// 添加协议版本头以便前端识别
+			w.Header().Add("X-Protocol", r.Proto)
+
 			// Set the status code
 			w.WriteHeader(resp.StatusCode)
 
@@ -376,6 +379,9 @@ func (h *http2MITMConn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(k, v)
 		}
 	}
+
+	// 添加协议版本头以便前端识别
+	w.Header().Add("X-Protocol", "HTTP/2")
 
 	// Set the status code
 	w.WriteHeader(resp.StatusCode)

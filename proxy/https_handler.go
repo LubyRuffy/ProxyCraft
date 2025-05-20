@@ -24,7 +24,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 直接隧道模式 - 不使用MITM
-	if (!s.EnableMITM) {
+	if !s.EnableMITM {
 		// 通知隧道建立事件
 		s.notifyTunnelEstablished(hostPort, false)
 
@@ -104,7 +104,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		defer targetConn.Close()
 
 		// 发送200 OK响应给客户端
-		responseStr := "HTTP/1.1 200 Connection Established\r\n\r\n"
+		responseStr := r.Proto + " 200 Connection Established\r\n\r\n"
 		if _, err := clientWriter.WriteString(responseStr); err != nil {
 			log.Printf("Error writing 200 response: %v", err)
 			return
@@ -143,7 +143,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	defer clientConn.Close()
 
 	// Send 200 Connection Established response
-	responseStr := "HTTP/1.1 200 Connection Established\r\n\r\n"
+	responseStr := r.Proto + " 200 Connection Established\r\n\r\n"
 	if _, err := clientWriter.WriteString(responseStr); err != nil {
 		log.Printf("Error writing 200 response: %v", err)
 		return
@@ -293,6 +293,9 @@ func (s *Server) tunnelHTTPSResponse(clientConn *tls.Conn, resp *http.Response, 
 			respHeader.Add(k, v)
 		}
 	}
+
+	// 添加协议版本头以便前端识别
+	respHeader.Add("X-Protocol", resp.Request.Proto)
 
 	// 处理压缩的响应体
 	s.processCompressedResponse(resp, reqCtx, s.Verbose)

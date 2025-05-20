@@ -21,6 +21,7 @@ type TrafficEntry struct {
 	Duration        int64       `json:"duration"`        // 耗时（毫秒）
 	Host            string      `json:"host"`            // 主机名
 	Method          string      `json:"method"`          // 请求方法
+	Protocol        string      `json:"protocol"`        // 协议
 	URL             string      `json:"url"`             // URL
 	Path            string      `json:"path"`            // 路径
 	StatusCode      int         `json:"statusCode"`      // 状态码
@@ -179,6 +180,7 @@ func (h *WebHandler) GetEntries() []*TrafficEntry {
 			StatusCode:  srcEntry.StatusCode,
 			ContentType: srcEntry.ContentType,
 			ContentSize: srcEntry.ContentSize,
+			Protocol:    srcEntry.Protocol,
 			IsSSE:       srcEntry.IsSSE,
 			IsHTTPS:     srcEntry.IsHTTPS,
 			Error:       srcEntry.Error,
@@ -231,6 +233,7 @@ func (h *WebHandler) OnRequest(ctx *proxy.RequestContext) *http.Request {
 		StartTime:      ctx.StartTime,
 		Host:           ctx.Request.Host,
 		Method:         ctx.Request.Method,
+		Protocol:       ctx.Request.Proto,
 		URL:            ctx.TargetURL,
 		Path:           ctx.Request.URL.Path,
 		IsHTTPS:        ctx.IsHTTPS,
