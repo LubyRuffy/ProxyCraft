@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -266,6 +268,96 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// streamResponse 是一个通用的流式传输函数，用于处理非文本内容的响应
+// 它支持HTTP和HTTPS两种模式，根据传入的writer类型自动选择合适的写入方式
+// 返回写入的字节数和可能的错误
+func (s *Server) streamResponse(body io.ReadCloser, writer interface{}, contentType string, verbose bool) (int64, error) {
+	// 检查是否为非文本内容
+	if isTextContentType(contentType) {
+		// 对于文本内容，使用一次性复制
+		if httpWriter, ok := writer.(io.Writer); ok {
+			return io.Copy(httpWriter, body)
+		}
+		return 0, fmt.Errorf("不支持的writer类型")
+	}
+
+	// 对于非文本内容，使用流式传输
+	if verbose {
+		log.Printf("[Proxy] Streaming non-text content: %s", contentType)
+	}
+
+	// 创建缓冲读取器
+	bufReader := bufio.NewReaderSize(body, 4096) // 4KB缓冲区
+	buf := make([]byte, 4096)
+	var totalWritten int64
+
+	// 根据writer类型选择不同的处理方式
+	switch w := writer.(type) {
+	case http.ResponseWriter:
+		// 尝试获取Flusher接口
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			// 如果不支持Flusher，则回退到一次性复制
+			if verbose {
+				log.Printf("[Proxy] Streaming not supported, falling back to io.Copy")
+			}
+			return io.Copy(w, body)
+		}
+
+		// 使用流式传输
+		for {
+			n, err := bufReader.Read(buf)
+			if n > 0 {
+				// 写入数据
+				if written, writeErr := w.Write(buf[:n]); writeErr != nil {
+					return totalWritten, fmt.Errorf("写入HTTP响应出错: %w", writeErr)
+				} else {
+					totalWritten += int64(written)
+				}
+				// 刷新数据
+				flusher.Flush()
+			}
+
+			if err != nil {
+				if err != io.EOF {
+					return totalWritten, fmt.Errorf("读取响应体出错: %w", err)
+				}
+				break
+			}
+		}
+
+	case *tls.Conn:
+		// 对于TLS连接，直接写入
+		for {
+			n, err := bufReader.Read(buf)
+			if n > 0 {
+				// 写入数据
+				if written, writeErr := w.Write(buf[:n]); writeErr != nil {
+					return totalWritten, fmt.Errorf("写入TLS连接出错: %w", writeErr)
+				} else {
+					totalWritten += int64(written)
+				}
+			}
+
+			if err != nil {
+				if err != io.EOF {
+					return totalWritten, fmt.Errorf("读取响应体出错: %w", err)
+				}
+				break
+			}
+		}
+
+	default:
+		return 0, fmt.Errorf("不支持的writer类型: %T", writer)
+	}
+
+	if verbose {
+		log.Printf("[Proxy] Streamed %d bytes of non-text content", totalWritten)
+	}
+
+	return totalWritten, nil
 }
 
 // readAndRestoreBody 读取并恢复请求/响应体

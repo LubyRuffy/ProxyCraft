@@ -214,9 +214,11 @@ func (s *Server) tunnelHTTPSResponse(clientConn *tls.Conn, resp *http.Response, 
 
 	// 写入响应体
 	if resp.Body != nil {
-		_, err := io.Copy(clientConn, resp.Body)
+		// 使用通用的流式传输函数处理响应
+		contentType := resp.Header.Get("Content-Type")
+		_, err := s.streamResponse(resp.Body, clientConn, contentType, s.Verbose)
 		if err != nil {
-			return fmt.Errorf("写入响应体到客户端出错: %w", err)
+			return fmt.Errorf("流式传输响应出错: %w", err)
 		}
 	}
 
