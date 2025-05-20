@@ -66,14 +66,14 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handleProxyRequest(w, r, targetURL, transport, false, nil)
 }
 
-// handleProxyRequest 统一处理HTTP和HTTPS(MITM)的代理转发逻辑
+// handleProxyRequest 统一处理HTTP和HTTPS的代理转发逻辑
 func (s *Server) handleProxyRequest(
 	w http.ResponseWriter,
 	r *http.Request,
 	targetURL string,
 	transport http.RoundTripper,
 	isHTTPS bool,
-	clientConn net.Conn, // 对于HTTPS MITM，传递TLS连接，否则为nil
+	clientConn net.Conn, // 对于HTTPS 传递TLS连接，否则为nil
 ) {
 	startTime := time.Now()
 	// 创建请求上下文
@@ -161,7 +161,7 @@ func (s *Server) handleProxyRequest(
 			log.Printf("[Proxy] Detected Server-Sent Events response from %s", targetURL)
 		}
 		if isHTTPS && clientConn != nil {
-			// HTTPS MITM: 需要手动写入TLS连接
+			// HTTPS: 需要手动写入TLS连接
 			writer := bufio.NewWriter(clientConn)
 			statusLine := fmt.Sprintf("HTTP/%d.%d %d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, resp.Status)
 			writer.WriteString(statusLine)

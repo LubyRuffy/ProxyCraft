@@ -27,9 +27,6 @@ type ServerConfig struct {
 	// HAR 日志记录器
 	HarLogger *harlogger.Logger
 
-	// 是否启用 MITM 模式
-	EnableMITM bool
-
 	// 上游代理 URL
 	UpstreamProxy *url.URL
 
@@ -46,20 +43,18 @@ type Server struct {
 	CertManager   *certs.Manager
 	Verbose       bool
 	HarLogger     *harlogger.Logger // Added for HAR logging
-	EnableMITM    bool              // 是否启用MITM模式，默认为false表示直接隧道模式
 	UpstreamProxy *url.URL          // 上层代理服务器URL，如果为nil则直接连接
 	DumpTraffic   bool              // 是否将抓包内容输出到控制台
 	EventHandler  EventHandler      // 事件处理器
 }
 
 // NewServer creates a new proxy server instance
-func NewServer(addr string, certManager *certs.Manager, verbose bool, harLogger *harlogger.Logger, enableMITM bool, upstreamProxy *url.URL, dumpTraffic bool) *Server {
+func NewServer(addr string, certManager *certs.Manager, verbose bool, harLogger *harlogger.Logger, upstreamProxy *url.URL, dumpTraffic bool) *Server {
 	return &Server{
 		Addr:          addr,
 		CertManager:   certManager,
 		Verbose:       verbose,
 		HarLogger:     harLogger,
-		EnableMITM:    enableMITM,
 		UpstreamProxy: upstreamProxy,
 		DumpTraffic:   dumpTraffic,
 		EventHandler:  &NoOpEventHandler{}, // 默认使用空实现
@@ -73,7 +68,6 @@ func NewServerWithConfig(config ServerConfig) *Server {
 		CertManager:   config.CertManager,
 		Verbose:       config.Verbose,
 		HarLogger:     config.HarLogger,
-		EnableMITM:    config.EnableMITM,
 		UpstreamProxy: config.UpstreamProxy,
 		DumpTraffic:   config.DumpTraffic,
 		EventHandler:  config.EventHandler,

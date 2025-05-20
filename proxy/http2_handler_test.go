@@ -55,7 +55,6 @@ func TestHTTP2MITMHandling(t *testing.T) {
 		certMgr,
 		true,
 		harLog,
-		true, // 启用MITM
 		nil,
 		false,
 	)
@@ -105,9 +104,8 @@ func TestHandleHTTP2(t *testing.T) {
 		certMgr,
 		true,
 		harLog,
-		true,
 		nil,
-		false,
+		true,
 	)
 
 	// 创建一个HTTP Transport
@@ -351,7 +349,7 @@ func TestHTTP2MITMConnServeHTTPWithError(t *testing.T) {
 func TestHandleHTTP2ConfigurationErrors(t *testing.T) {
 	// 创建一个服务器实例
 	certMgr, _ := certs.NewManager()
-	server := NewServer("127.0.0.1:0", certMgr, true, nil, true, nil, false)
+	server := NewServer("127.0.0.1:0", certMgr, true, nil, nil, false)
 
 	// 创建一个测试HTTP/2服务器
 	http2Server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

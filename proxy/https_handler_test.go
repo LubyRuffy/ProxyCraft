@@ -50,8 +50,7 @@ func TestHTTPSHandler(t *testing.T) {
 		certMgr,
 		false,
 		harLog,
-		true, // 启用MITM模式
-		nil,  // 不使用上游代理
+		nil, // 不使用上游代理
 		false,
 	)
 	assert.NotNil(t, server)
@@ -88,90 +87,6 @@ func TestHTTPSHandler(t *testing.T) {
 	assert.Contains(t, string(body), "Hello from HTTPS server")
 }
 
-func TestServerHTTPSHandlersWithDifferentModes(t *testing.T) {
-	// 创建后端HTTPS服务器
-	backendServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte("Hello from HTTPS backend"))
-	}))
-	defer backendServer.Close()
-
-	// 创建必要的依赖项
-	certMgr, _ := certs.NewManager()
-	harLog := harlogger.NewLogger("", "ProxyCraft", "0.1.0")
-
-	// 测试不同的代理服务器模式
-	testCases := []struct {
-		name     string
-		mitmMode bool
-		expectOK bool
-	}{
-		{
-			name:     "MITM模式-允许拦截HTTPS",
-			mitmMode: true,
-			expectOK: true,
-		},
-		{
-			name:     "非MITM模式-隧道传输HTTPS",
-			mitmMode: false,
-			expectOK: true, // 隧道模式也应该工作
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// 创建代理服务器 - 使用随机端口避免冲突
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			assert.NoError(t, err)
-			proxyAddr := listener.Addr().String()
-			listener.Close() // 关闭监听器，让服务器可以使用这个端口
-
-			// 创建代理服务器
-			server := NewServer(
-				proxyAddr,
-				certMgr,
-				true, // 启用详细日志
-				harLog,
-				tc.mitmMode,
-				nil, // 不使用上游代理
-				false,
-			)
-			assert.NotNil(t, server)
-
-			// 启动代理服务器
-			go server.Start()
-			time.Sleep(100 * time.Millisecond) // 等待服务器启动
-
-			// 创建测试客户端
-			proxyURL, _ := url.Parse("http://" + proxyAddr)
-			client := &http.Client{
-				Transport: &http.Transport{
-					Proxy: http.ProxyURL(proxyURL),
-					TLSClientConfig: &tls.Config{
-						InsecureSkipVerify: true, // 忽略证书验证，因为我们使用的是自签名证书
-					},
-				},
-			}
-
-			// 发送测试请求
-			resp, err := client.Get(backendServer.URL)
-
-			if tc.expectOK {
-				assert.NoError(t, err)
-				if resp != nil {
-					defer resp.Body.Close()
-					assert.Equal(t, 200, resp.StatusCode)
-
-					// 读取响应体
-					body, err := io.ReadAll(resp.Body)
-					assert.NoError(t, err)
-					assert.Contains(t, string(body), "Hello from HTTPS backend")
-				}
-			}
-		})
-	}
-}
-
 type notHijackableResponseWriter struct {
 	http.ResponseWriter
 }
@@ -187,7 +102,6 @@ func TestHTTPSHandleHijackError(t *testing.T) {
 		certMgr,
 		true,
 		harLog,
-		false,
 		nil,
 		false,
 	)
@@ -255,7 +169,6 @@ func TestHTTPSWithUpstreamProxy(t *testing.T) {
 		certMgr,
 		true, // 启用详细日志
 		harLog,
-		false, // 不启用 MITM 模式
 		upstreamProxyURL,
 		false,
 	)
@@ -280,7 +193,6 @@ func TestHTTPSMITMCertificateError(t *testing.T) {
 		CertManager: certMgr,
 		Verbose:     true,
 		HarLogger:   harLog,
-		EnableMITM:  true, // 启用MITM模式
 	}
 
 	// 创建一个带有无效主机名的 CONNECT 请求，这将导致证书生成失败
@@ -305,7 +217,6 @@ func TestHTTPSMITMTLSHandshakeFailure(t *testing.T) {
 		certMgr,
 		true,
 		harLog,
-		true, // 启用 MITM 模式
 		nil,
 		true, // 启用流量输出
 	)

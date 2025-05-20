@@ -99,7 +99,6 @@ func TestServerWithServerSentEvents(t *testing.T) {
 		certMgr,
 		true, // 启用详细日志
 		harLog,
-		false,
 		nil,
 		false,
 	)

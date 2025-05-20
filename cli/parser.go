@@ -19,7 +19,6 @@ type Config struct {
 	UseCACertPath    string
 	UseCAKeyPath     string
 	ShowHelp         bool
-	EnableMITM       bool   // Enable MITM mode for HTTPS traffic inspection
 	UpstreamProxy    string // Upstream proxy URL (e.g., "http://proxy.example.com:8080")
 	DumpTraffic      bool   // Enable dumping traffic content to console
 	Mode             string // 运行模式: "" (CLI模式) 或 "web" (Web界面模式)
@@ -42,7 +41,6 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.ExportCAPath, "export-ca", "", "Export the root CA certificate to FILEPATH and exit")
 	flag.StringVar(&cfg.UseCACertPath, "use-ca", "", "Use custom root CA certificate from CERT_PATH")
 	flag.StringVar(&cfg.UseCAKeyPath, "use-key", "", "Use custom root CA private key from KEY_PATH")
-	flag.BoolVar(&cfg.EnableMITM, "mitm", false, "Enable MITM mode for HTTPS traffic inspection")
 	flag.StringVar(&cfg.UpstreamProxy, "upstream-proxy", "", "Upstream proxy URL (e.g., \"http://proxy.example.com:8080\")")
 	flag.BoolVar(&cfg.DumpTraffic, "dump", false, "Dump traffic content to console with headers (binary content will not be displayed)")
 	flag.StringVar(&cfg.Mode, "mode", "", "Running mode: empty for CLI mode, 'web' for Web UI mode")
