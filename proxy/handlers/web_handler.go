@@ -15,25 +15,27 @@ import (
 
 // TrafficEntry 表示一条流量记录
 type TrafficEntry struct {
-	ID              string      `json:"id"`              // 唯一标识
-	StartTime       time.Time   `json:"startTime"`       // 请求开始时间
-	EndTime         time.Time   `json:"endTime"`         // 响应结束时间
-	Duration        int64       `json:"duration"`        // 耗时（毫秒）
-	Host            string      `json:"host"`            // 主机名
-	Method          string      `json:"method"`          // 请求方法
-	Protocol        string      `json:"protocol"`        // 协议
-	URL             string      `json:"url"`             // URL
-	Path            string      `json:"path"`            // 路径
-	StatusCode      int         `json:"statusCode"`      // 状态码
-	ContentType     string      `json:"contentType"`     // 内容类型
-	ContentSize     int         `json:"contentSize"`     // 内容大小
-	IsSSE           bool        `json:"isSSE"`           // 是否为SSE请求
-	IsHTTPS         bool        `json:"isHTTPS"`         // 是否为HTTPS请求
-	RequestBody     []byte      `json:"-"`               // 请求体
-	ResponseBody    []byte      `json:"-"`               // 响应体
-	RequestHeaders  http.Header `json:"-"`               // 请求头
-	ResponseHeaders http.Header `json:"-"`               // 响应头
-	Error           string      `json:"error,omitempty"` // 错误信息
+	ID              string      `json:"id"`               // 唯一标识
+	StartTime       time.Time   `json:"startTime"`        // 请求开始时间
+	EndTime         time.Time   `json:"endTime"`          // 响应结束时间
+	Duration        int64       `json:"duration"`         // 耗时（毫秒）
+	Host            string      `json:"host"`             // 主机名
+	HostWithSchema  string      `json:"host_with_schema"` // 主机名（包含协议）
+	Method          string      `json:"method"`           // 请求方法
+	Schema          string      `json:"schema"`           // http/https
+	Protocol        string      `json:"protocol"`         // 协议
+	URL             string      `json:"url"`              // URL
+	Path            string      `json:"path"`             // 路径
+	StatusCode      int         `json:"statusCode"`       // 状态码
+	ContentType     string      `json:"contentType"`      // 内容类型
+	ContentSize     int         `json:"contentSize"`      // 内容大小
+	IsSSE           bool        `json:"isSSE"`            // 是否为SSE请求
+	IsHTTPS         bool        `json:"isHTTPS"`          // 是否为HTTPS请求
+	RequestBody     []byte      `json:"-"`                // 请求体
+	ResponseBody    []byte      `json:"-"`                // 响应体
+	RequestHeaders  http.Header `json:"-"`                // 请求头
+	ResponseHeaders http.Header `json:"-"`                // 响应头
+	Error           string      `json:"error,omitempty"`  // 错误信息
 }
 
 // NewEntryCallback 定义新条目回调函数类型
@@ -169,21 +171,23 @@ func (h *WebHandler) GetEntries() []*TrafficEntry {
 
 		// 创建一个不包含请求体和响应体等大数据的新条目
 		result[i] = &TrafficEntry{
-			ID:          srcEntry.ID,
-			StartTime:   srcEntry.StartTime,
-			EndTime:     srcEntry.EndTime,
-			Duration:    srcEntry.Duration,
-			Host:        srcEntry.Host,
-			Method:      srcEntry.Method,
-			URL:         srcEntry.URL,
-			Path:        srcEntry.Path,
-			StatusCode:  srcEntry.StatusCode,
-			ContentType: srcEntry.ContentType,
-			ContentSize: srcEntry.ContentSize,
-			Protocol:    srcEntry.Protocol,
-			IsSSE:       srcEntry.IsSSE,
-			IsHTTPS:     srcEntry.IsHTTPS,
-			Error:       srcEntry.Error,
+			ID:             srcEntry.ID,
+			StartTime:      srcEntry.StartTime,
+			EndTime:        srcEntry.EndTime,
+			Duration:       srcEntry.Duration,
+			Host:           srcEntry.Host,
+			Method:         srcEntry.Method,
+			Schema:         srcEntry.Schema,
+			HostWithSchema: srcEntry.HostWithSchema,
+			URL:            srcEntry.URL,
+			Path:           srcEntry.Path,
+			StatusCode:     srcEntry.StatusCode,
+			ContentType:    srcEntry.ContentType,
+			ContentSize:    srcEntry.ContentSize,
+			Protocol:       srcEntry.Protocol,
+			IsSSE:          srcEntry.IsSSE,
+			IsHTTPS:        srcEntry.IsHTTPS,
+			Error:          srcEntry.Error,
 		}
 	}
 
@@ -233,6 +237,8 @@ func (h *WebHandler) OnRequest(ctx *proxy.RequestContext) *http.Request {
 		StartTime:      ctx.StartTime,
 		Host:           ctx.Request.Host,
 		Method:         ctx.Request.Method,
+		Schema:         ctx.Request.URL.Scheme,
+		HostWithSchema: ctx.Request.URL.Scheme + "://" + ctx.Request.Host,
 		Protocol:       ctx.Request.Proto,
 		URL:            ctx.TargetURL,
 		Path:           ctx.Request.URL.Path,

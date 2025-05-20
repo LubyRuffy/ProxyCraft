@@ -42,32 +42,32 @@
             <span class="method-cell">{{ scope.row.method }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="host" label="Host" width="120" show-overflow-tooltip />
-        <el-table-column prop="path" label="路径" min-width="180" show-overflow-tooltip>
+        <el-table-column prop="host_with_schema" label="Host" width="200" show-overflow-tooltip />
+        <el-table-column prop="path" label="Path" min-width="180" show-overflow-tooltip>
           <template #default="scope">
             <span class="path-cell">{{ scope.row.path }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="statusCode" label="状态码" width="70">
+        <el-table-column prop="statusCode" label="Code" width="70">
           <template #default="scope">
             <span :class="getStatusClass(scope.row.statusCode)">{{ scope.row.statusCode }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="contentType" label="内容类型" width="120" show-overflow-tooltip />
-        <el-table-column prop="contentSize" label="大小" width="100">
+        <el-table-column prop="contentType" label="MIME" width="120" show-overflow-tooltip />
+        <el-table-column prop="contentSize" label="Size" width="100">
           <template #default="scope">
             {{ formatBytes(scope.row.contentSize) }}
           </template>
         </el-table-column>
-        <el-table-column prop="duration" label="耗时" width="70">
+        <el-table-column prop="duration" label="Cost" width="70">
           <template #default="scope">
             {{ scope.row.duration }}ms
           </template>
         </el-table-column>
         <el-table-column width="60">
           <template #default="scope">
-            <el-tag v-if="scope.row.isHTTPS" type="success" size="small" effect="plain">HTTPS</el-tag>
-            <el-tag v-if="scope.row.isSSE" type="warning" size="small" effect="plain">SSE</el-tag>
+            <el-tag v-if="scope.row.isHTTPS" type="success" size="small" effect="plain" round>HTTPS</el-tag>
+            <el-tag v-if="scope.row.isSSE" type="warning" size="small" effect="plain" round>SSE</el-tag>
           </template>
         </el-table-column>
       </el-table>
@@ -375,7 +375,7 @@ const handleRowClick = (row: TrafficEntry) => {
 
 // 格式化字节大小
 const formatBytes = (bytes: number) => {
-  if (bytes === 0) return '0 B';
+  if (bytes === 0 || bytes === undefined) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
