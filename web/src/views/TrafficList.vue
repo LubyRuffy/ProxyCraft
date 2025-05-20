@@ -54,7 +54,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="contentType" label="内容类型" width="120" show-overflow-tooltip />
-        <el-table-column prop="contentSize" label="大小" width="70">
+        <el-table-column prop="contentSize" label="大小" width="100">
           <template #default="scope">
             {{ formatBytes(scope.row.contentSize) }}
           </template>
