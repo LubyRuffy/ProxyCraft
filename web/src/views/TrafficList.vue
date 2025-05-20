@@ -320,7 +320,12 @@ watch(() => isConnected.value, (newValue) => {
 // 刷新数据
 const refreshData = () => {
   if (websocketService.isConnected()) {
-    store.dispatch('fetchTrafficEntries');
+    store.commit('setLoading', true); // 在获取数据前设置 loading 为 true
+    store.dispatch('fetchTrafficEntries').then(() => {
+      store.commit('setLoading', false); // 在数据获取完成后设置 loading 为 false
+    }).catch(() => {
+      store.commit('setLoading', false); // 在数据获取失败时也设置 loading 为 false
+    });
   } else {
     // 如果未连接，先尝试重新连接
     console.log('WebSocket未连接，尝试重新连接后再获取数据');
@@ -330,7 +335,11 @@ const refreshData = () => {
     setTimeout(() => {
       // 如果连接成功，获取数据
       if (websocketService.isConnected()) {
-        store.dispatch('fetchTrafficEntries');
+        store.dispatch('fetchTrafficEntries').then(() => {
+          store.commit('setLoading', false);
+        }).catch(() => {
+          store.commit('setLoading', false);
+        });
       } else {
         // 连接仍然失败，显示错误
         store.commit('setError', 'WebSocket连接失败，无法获取数据');
