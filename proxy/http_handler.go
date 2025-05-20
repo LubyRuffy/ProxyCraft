@@ -49,6 +49,19 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		DisableCompression:    true,
 		ResponseHeaderTimeout: 5 * time.Second,
 	}
+
+	s.handleProxyRequest(w, r, targetURL, baseTransport, false, nil)
+}
+
+// handleProxyRequest 统一处理HTTP和HTTPS的代理转发逻辑
+func (s *Server) handleProxyRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	targetURL string,
+	baseTransport *http.Transport,
+	isHTTPS bool,
+	clientConn net.Conn, // 对于HTTPS 传递TLS连接，否则为nil
+) {
 	if s.UpstreamProxy != nil {
 		if s.Verbose {
 			log.Printf("[HTTP] Using upstream proxy: %s", s.UpstreamProxy.String())
@@ -63,18 +76,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		verbose:        s.Verbose,
 	}
 
-	s.handleProxyRequest(w, r, targetURL, transport, false, nil)
-}
-
-// handleProxyRequest 统一处理HTTP和HTTPS的代理转发逻辑
-func (s *Server) handleProxyRequest(
-	w http.ResponseWriter,
-	r *http.Request,
-	targetURL string,
-	transport http.RoundTripper,
-	isHTTPS bool,
-	clientConn net.Conn, // 对于HTTPS 传递TLS连接，否则为nil
-) {
 	startTime := time.Now()
 	// 创建请求上下文
 	reqCtx := s.createRequestContext(r, targetURL, startTime, isHTTPS)
