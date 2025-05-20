@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"bufio"
+	"crypto/tls"
 )
 
 // handleHTTP is the handler for all incoming HTTP requests
@@ -28,52 +30,13 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.IsAbs() {
 		targetURL = r.URL.String()
 	} else {
-		// If URL is not absolute, scheme is http by default for proxy requests unless it's CONNECT
-		// For non-CONNECT, r.Host contains the target host and port
 		targetURL = "http://" + r.Host + r.URL.Path
 		if r.URL.RawQuery != "" {
 			targetURL += "?" + r.URL.RawQuery
 		}
 	}
 
-	if s.Verbose {
-		log.Printf("[HTTP] Forwarding request to: %s %s", r.Method, targetURL)
-	}
-
-	// 创建请求上下文
-	startTime := time.Now()
-	reqCtx := s.createRequestContext(r, targetURL, startTime, false)
-
-	// 通知请求事件
-	modifiedReq := s.notifyRequest(reqCtx)
-	if modifiedReq != r && modifiedReq != nil {
-		r = modifiedReq
-	}
-
-	proxyReq, err := http.NewRequest(r.Method, targetURL, r.Body)
-	if err != nil {
-		log.Printf("[HTTP] Error creating proxy request for %s: %v", targetURL, err)
-		http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
-		s.notifyError(err, reqCtx)
-		return
-	}
-
-	// Copy headers from original request to proxy request
-	for k, vv := range r.Header {
-		for _, v := range vv {
-			proxyReq.Header.Add(k, v)
-		}
-	}
-	// Ensure Host header is set correctly for the target server
-	proxyReq.Host = r.Host
-
-	// Check if this might be an SSE request based on patterns and headers
-	potentialSSE := isSSERequest(proxyReq)
-	if s.Verbose && potentialSSE {
-		log.Printf("[HTTP] Potential SSE request detected based on URL path or Accept header")
-	}
-
-	// Create a custom RoundTripper that can intercept SSE responses early
+	// 构建transport
 	baseTransport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
@@ -83,24 +46,16 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		// Don't automatically decompress responses to allow proper SSE handling
-		DisableCompression: true,
-		// Override the RoundTrip method to intercept responses early
-		ResponseHeaderTimeout: 5 * time.Second, // Timeout for receiving response headers
+		DisableCompression:    true,
+		ResponseHeaderTimeout: 5 * time.Second,
 	}
-
-	// 如果配置了上层代理，设置代理URL
 	if s.UpstreamProxy != nil {
 		if s.Verbose {
 			log.Printf("[HTTP] Using upstream proxy: %s", s.UpstreamProxy.String())
 		}
 		baseTransport.Proxy = http.ProxyURL(s.UpstreamProxy)
 	}
-
-	// Configure HTTP/2 support
 	s.handleHTTP2(baseTransport)
-
-	// Create a custom transport that can detect SSE responses early
 	transport := &earlySSEDetector{
 		base:           baseTransport,
 		responseWriter: w,
@@ -108,203 +63,154 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		verbose:        s.Verbose,
 	}
 
-	// Special handling for potential SSE requests
+	s.handleProxyRequest(w, r, targetURL, transport, false, nil)
+}
+
+// handleProxyRequest 统一处理HTTP和HTTPS(MITM)的代理转发逻辑
+func (s *Server) handleProxyRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	targetURL string,
+	transport http.RoundTripper,
+	isHTTPS bool,
+	clientConn net.Conn, // 对于HTTPS MITM，传递TLS连接，否则为nil
+) {
+	startTime := time.Now()
+	// 创建请求上下文
+	reqCtx := s.createRequestContext(r, targetURL, startTime, isHTTPS)
+	modifiedReq := s.notifyRequest(reqCtx)
+	if modifiedReq != r && modifiedReq != nil {
+		r = modifiedReq
+	}
+
+	proxyReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+	if err != nil {
+		log.Printf("[Proxy] Error creating proxy request for %s: %v", targetURL, err)
+		if isHTTPS && clientConn != nil {
+			clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		} else {
+			http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
+		}
+		s.notifyError(err, reqCtx)
+		return
+	}
+	for k, vv := range r.Header {
+		for _, v := range vv {
+			proxyReq.Header.Add(k, v)
+		}
+	}
+	proxyReq.Host = r.Host
+
+	potentialSSE := isSSERequest(proxyReq)
+	if s.Verbose && potentialSSE {
+		log.Printf("[Proxy] Potential SSE request detected based on URL path or Accept header")
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
 	if potentialSSE {
-		if s.Verbose {
-			log.Printf("[HTTP] Using special SSE handling for %s", targetURL)
-		}
-
-		// Use a custom client with no timeout for SSE
-		client := &http.Client{
-			Transport: transport,
-			// No timeout for SSE requests
-		}
-
-		// Set special headers for SSE
+		client.Timeout = 0 // SSE无超时
 		proxyReq.Header.Set("Accept", "text/event-stream")
 		proxyReq.Header.Set("Cache-Control", "no-cache")
 		proxyReq.Header.Set("Connection", "keep-alive")
+	}
 
-		// Send the request
-		resp, err := client.Do(proxyReq)
-		timeTaken := time.Since(startTime)
+	resp, err := client.Do(proxyReq)
+	timeTaken := time.Since(startTime)
+	if err != nil {
+		log.Printf("[Proxy] Error sending request to target server %s: %v", targetURL, err)
+		if isHTTPS && clientConn != nil {
+			clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		} else {
+			http.Error(w, "Error proxying to "+targetURL+": "+err.Error(), http.StatusBadGateway)
+		}
+		s.logToHAR(r, nil, startTime, timeTaken, false)
+		s.notifyError(err, reqCtx)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.Request == nil {
+		resp.Request = proxyReq
+	}
 
-		if err != nil {
-			log.Printf("[HTTP] Error sending request to target server %s: %v", targetURL, err)
-			http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL, err), http.StatusBadGateway)
-			s.notifyError(err, reqCtx)
+	s.processCompressedResponse(resp, reqCtx, s.Verbose)
+	respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
+	modifiedResp := s.notifyResponse(respCtx)
+	if modifiedResp != resp && modifiedResp != nil {
+		resp = modifiedResp
+		respCtx.Response = resp
+	}
+	if !isServerSentEvent(resp) {
+		s.logToHAR(r, resp, startTime, timeTaken, false)
+	}
+	if s.DumpTraffic {
+		s.dumpRequestBody(r)
+		if !isServerSentEvent(resp) {
+			s.dumpResponseBody(resp)
+		}
+	}
+	if s.Verbose {
+		log.Printf("[Proxy] Received response from %s: %d %s", targetURL, resp.StatusCode, resp.Status)
+	} else {
+		log.Printf("[Proxy] %s %s%s -> %d %s", r.Method, r.Host, r.URL.RequestURI(), resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if isServerSentEvent(resp) {
+		if s.Verbose {
+			log.Printf("[Proxy] Detected Server-Sent Events response from %s", targetURL)
+		}
+		if isHTTPS && clientConn != nil {
+			// HTTPS MITM: 需要手动写入TLS连接
+			writer := bufio.NewWriter(clientConn)
+			statusLine := fmt.Sprintf("HTTP/%d.%d %d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, resp.Status)
+			writer.WriteString(statusLine)
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					writer.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+				}
+			}
+			writer.WriteString("\r\n")
+			writer.Flush()
+			reader := bufio.NewReader(resp.Body)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if err != nil {
+					break
+				}
+				_, err = writer.Write(line)
+				if err != nil {
+					break
+				}
+				writer.Flush()
+			}
 			return
-		}
-		defer resp.Body.Close()
-
-		if resp.Request == nil {
-			resp.Request = proxyReq
-		}
-
-		// 处理压缩的响应体
-		s.processCompressedResponse(resp, reqCtx, s.Verbose)
-
-		// 创建响应上下文
-		respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
-
-		// 通知响应事件
-		modifiedResp := s.notifyResponse(respCtx)
-		if modifiedResp != resp && modifiedResp != nil {
-			resp = modifiedResp
-			respCtx.Response = resp
-		}
-
-		// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
-		// 只为非 SSE 响应记录 HAR 条目
-		if !isServerSentEvent(resp) && s.HarLogger.IsEnabled() {
-			serverIP := ""
-			if proxyReq != nil && proxyReq.URL != nil {
-				serverIP = proxyReq.URL.Host
-			}
-			s.HarLogger.AddEntry(r, resp, startTime, timeTaken, serverIP, r.RemoteAddr)
-		}
-
-		// Check if this is actually an SSE response
-		if isServerSentEvent(resp) {
-			if s.Verbose {
-				log.Printf("[HTTP] Confirmed SSE response from %s", targetURL)
-			}
-
-			// Handle SSE response
+		} else {
+			// HTTP明文: 直接用handleSSE
 			err := s.handleSSE(w, respCtx)
 			if err != nil {
 				log.Printf("[SSE] Error handling SSE response: %v", err)
 				s.notifyError(err, reqCtx)
 			}
 			return
-		} else {
-			// Not an SSE response, handle normally
-			if s.Verbose {
-				log.Printf("[HTTP] Expected SSE but got %s from %s", resp.Header.Get("Content-Type"), targetURL)
-			}
-
-			// Copy headers from target server's response to our response writer
-			for k, vv := range resp.Header {
-				for _, v := range vv {
-					w.Header().Add(k, v)
-				}
-			}
-
-			// Set the status code
-			w.WriteHeader(resp.StatusCode)
-
-			// Copy the body from target server's response to our response writer
-			written, err := io.Copy(w, resp.Body)
-			if err != nil {
-				log.Printf("Error copying response body: %v", err)
-				s.notifyError(err, reqCtx)
-			}
-
-			log.Printf("Copied %d bytes for response body from %s", written, targetURL)
-			return
 		}
 	}
-
-	// For non-SSE requests, use normal handling
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   30 * time.Second,
-	}
-
-	resp, err := client.Do(proxyReq)
-	timeTaken := time.Since(startTime)
-
-	if err != nil {
-		log.Printf("[HTTP] Error sending request to target server %s: %v", targetURL, err)
-		http.Error(w, fmt.Sprintf("Error proxying to %s: %v", targetURL, err), http.StatusBadGateway)
-		// Log to HAR even if there's an error sending the request (resp might be nil)
-		s.logToHAR(r, nil, startTime, timeTaken, false)
-		s.notifyError(err, reqCtx)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.Request == nil {
-		resp.Request = proxyReq
-	}
-
-	// 处理压缩的响应体
-	s.processCompressedResponse(resp, reqCtx, s.Verbose)
-
-	// 创建响应上下文
-	respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
-
-	// 通知响应事件
-	modifiedResp := s.notifyResponse(respCtx)
-	if modifiedResp != resp && modifiedResp != nil {
-		resp = modifiedResp
-		respCtx.Response = resp
-	}
-
-	// Log to HAR - 但对于SSE响应，我们在 handleSSE 中记录
-	// 只为非 SSE 响应记录 HAR 条目
-	if !isServerSentEvent(resp) {
-		s.logToHAR(r, resp, startTime, timeTaken, false)
-	}
-
-	// 如果启用了流量输出，输出请求和响应内容
-	if s.DumpTraffic {
-		s.dumpRequestBody(r)
-		if !isServerSentEvent(resp) { // SSE响应在handleSSE中处理
-			s.dumpResponseBody(resp)
-		}
-	}
-
-	if s.Verbose {
-		log.Printf("[HTTP] Received response from %s: %d %s", targetURL, resp.StatusCode, resp.Status)
-	} else {
-		log.Printf("[HTTP] %s %s%s -> %d %s", r.Method, r.Host, r.URL.RequestURI(), resp.StatusCode, resp.Header.Get("Content-Type"))
-	}
-
-	// Check if this is a Server-Sent Events response
-	if isServerSentEvent(resp) {
-		if s.Verbose {
-			log.Printf("[HTTP] Detected Server-Sent Events response from %s", targetURL)
-		}
-
-		// Handle SSE response
-		err := s.handleSSE(w, respCtx)
+	// 非SSE响应
+	if isHTTPS && clientConn != nil {
+		err := s.tunnelHTTPSResponse(clientConn.(*tls.Conn), resp, reqCtx)
 		if err != nil {
-			log.Printf("[SSE] Error handling SSE response: %v", err)
-			s.notifyError(err, reqCtx)
+			log.Printf("[Proxy] Error tunneling response to client: %v", err)
 		}
 		return
 	}
-
-	// For non-SSE responses, proceed with normal handling
-	// Copy headers from target server's response to our response writer
+	// HTTP明文: 直接写入w
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
 		}
 	}
-
-	// Set the status code
 	w.WriteHeader(resp.StatusCode)
-
-	// Copy the body from target server's response to our response writer
-	written, err := io.Copy(w, resp.Body)
-	if err != nil {
-		log.Printf("Error copying response body: %v", err)
-		s.notifyError(err, reqCtx)
-		// Don't send http.Error here as headers might have already been written
-	}
-
-	// Log protocol information if verbose
-	if s.Verbose {
-		proto := "HTTP/1.1"
-		if resp.ProtoMajor == 2 {
-			proto = "HTTP/2.0"
-		}
-		log.Printf("[HTTP] Response protocol: %s", proto)
-	}
-
-	log.Printf("Copied %d bytes for response body from %s", written, targetURL)
+	io.Copy(w, resp.Body)
 }
 
 // isTextContentType 判断Content-Type是否为文本类型
@@ -377,10 +283,5 @@ func isTextContentType(contentType string) bool {
 		"text/csv":                     true,
 		"application/ld+json":          true,
 	}
-
-	if otherTextTypes[contentType] {
-		return true
-	}
-
-	return false
+	return otherTextTypes[contentType]
 }

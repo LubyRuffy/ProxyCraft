@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -25,7 +24,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 直接隧道模式 - 不使用MITM
-	if !s.EnableMITM {
+	if (!s.EnableMITM) {
 		// 通知隧道建立事件
 		s.notifyTunnelEstablished(hostPort, false)
 
@@ -240,81 +239,23 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Prepare the outgoing request to the actual target server
-		// Use the original host from the CONNECT request (with port if present)
 		targetHost := r.Host
-
-		// If the tunneled request has a different host, log it (unusual case)
-		if tunneledReq.Host != "" && tunneledReq.Host != targetHost && tunneledReq.Host != hostname {
-			log.Printf("[MITM for %s] Warning: Tunneled request has different host: %s", r.Host, tunneledReq.Host)
-		}
-
 		targetURL := &url.URL{
-			Scheme:   "https",    // Because it was a CONNECT request, implying HTTPS
-			Host:     targetHost, // The actual destination server from CONNECT
+			Scheme:   "https",
+			Host:     targetHost,
 			Path:     tunneledReq.URL.Path,
 			RawQuery: tunneledReq.URL.RawQuery,
 		}
 
-		outReq, err := http.NewRequest(tunneledReq.Method, targetURL.String(), tunneledReq.Body)
-		if err != nil {
-			log.Printf("[MITM for %s] Error creating outgoing request: %v", r.Host, err)
-			break
-		}
-
-		// Copy headers from tunneled request to outgoing request
-		outReq.Header = make(http.Header)
-		for k, vv := range tunneledReq.Header {
-			outReq.Header[k] = vv
-		}
-		// Set the Host header for the outgoing request to the actual target host
-		// Use the hostname without port if the original request had a Host header with just the hostname
-		if tunneledReq.Host != "" && (tunneledReq.Host == hostname || tunneledReq.Host == targetHost) {
-			outReq.Host = tunneledReq.Host
-		} else {
-			outReq.Host = targetHost // Use the original host from CONNECT request
-		}
-
-		// Send the outgoing request
-		startTime := time.Now()
-
-		// 创建请求上下文并通知请求事件
-		reqCtx := s.createRequestContext(tunneledReq, targetURL.String(), startTime, true)
-		modifiedReq := s.notifyRequest(reqCtx)
-		if modifiedReq != tunneledReq && modifiedReq != nil {
-			// 如果请求被修改，更新外发请求
-			tunneledReq = modifiedReq
-			// 重新创建外发请求以包含修改
-			outReq, err = http.NewRequest(tunneledReq.Method, targetURL.String(), tunneledReq.Body)
-			if err != nil {
-				log.Printf("[MITM for %s] Error creating modified outgoing request: %v", r.Host, err)
-				break
-			}
-			// 复制修改后的请求头
-			outReq.Header = make(http.Header)
-			for k, vv := range tunneledReq.Header {
-				outReq.Header[k] = vv
-			}
-			outReq.Host = tunneledReq.Host
-		}
-
-		// Check if this might be an SSE request based on patterns and headers
-		potentialSSE := isSSERequest(outReq)
-		if s.Verbose && potentialSSE {
-			log.Printf("[MITM for %s] Potential SSE request detected based on URL path or Accept header", r.Host)
-		}
-
-		// Create a custom transport that skips certificate verification
-		// This is necessary for MITM mode to work with HTTPS sites
-		// Extract hostname without port for SNI
+		// 构建transport
 		targetHostname := targetHost
 		if h, _, err := net.SplitHostPort(targetHost); err == nil {
 			targetHostname = h
 		}
-
 		transport := &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,           // Skip certificate verification
-				ServerName:         targetHostname, // Set SNI (Server Name Indication)
+				InsecureSkipVerify: true,
+				ServerName:         targetHostname,
 			},
 			DialContext: (&net.Dialer{
 				Timeout:   30 * time.Second,
@@ -324,308 +265,17 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			// Don't automatically decompress responses to allow proper SSE handling
-			DisableCompression: true,
+			DisableCompression:    true,
 		}
-
-		// 如果配置了上层代理，设置代理URL
 		if s.UpstreamProxy != nil {
 			if s.Verbose {
 				log.Printf("[MITM for %s] Using upstream proxy: %s", r.Host, s.UpstreamProxy.String())
 			}
 			transport.Proxy = http.ProxyURL(s.UpstreamProxy)
 		}
-
-		// Configure HTTP/2 support for the transport
 		s.handleHTTP2(transport)
-
-		// Create a custom transport that can detect SSE responses early
-		sseTransport := &earlySSEDetector{
-			base:           transport,
-			responseWriter: tlsClientConn,
-			server:         s,
-			verbose:        s.Verbose,
-		}
-
-		// Special handling for potential SSE requests
-		if potentialSSE {
-			if s.Verbose {
-				log.Printf("[MITM for %s] Using special SSE handling", r.Host)
-			}
-
-			// Use a custom client with no timeout for SSE
-			httpClient := &http.Client{
-				Transport: sseTransport,
-				// No timeout for SSE requests
-			}
-
-			// Set special headers for SSE
-			outReq.Header.Set("Accept", "text/event-stream")
-			outReq.Header.Set("Cache-Control", "no-cache")
-			outReq.Header.Set("Connection", "keep-alive")
-
-			// Send the request
-			resp, err := httpClient.Do(outReq)
-			timeTaken := time.Since(startTime)
-
-			if err != nil {
-				log.Printf("[MITM for %s] Error sending request to target %s: %v", r.Host, targetURL.String(), err)
-				// Log to HAR even if there's an error
-				s.logToHAR(tunneledReq, nil, startTime, timeTaken, false)
-				s.notifyError(err, reqCtx)
-				break
-			}
-			defer resp.Body.Close()
-
-			// 创建响应上下文
-			respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
-
-			// 通知响应事件
-			modifiedResp := s.notifyResponse(respCtx)
-			if modifiedResp != resp && modifiedResp != nil {
-				resp = modifiedResp
-				respCtx.Response = resp
-			}
-
-			// Log to HAR
-			s.logToHAR(tunneledReq, resp, startTime, timeTaken, isServerSentEvent(resp))
-
-			// Check if this is actually an SSE response
-			if isServerSentEvent(resp) {
-				if s.Verbose {
-					log.Printf("[MITM for %s] Confirmed SSE response", r.Host)
-				}
-
-				// 对于 SSE 响应，不在这里记录 HAR 条目，而是在处理完成后记录
-
-				// For SSE in MITM mode, we need to handle it differently
-				// First, write the response headers
-				writer := bufio.NewWriter(tlsClientConn)
-
-				// Write the status line
-				statusLine := fmt.Sprintf("HTTP/%d.%d %d %s\r\n",
-					resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, resp.Status)
-				writer.WriteString(statusLine)
-
-				// Write headers
-				for k, vv := range resp.Header {
-					for _, v := range vv {
-						writer.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-					}
-				}
-
-				// End of headers
-				writer.WriteString("\r\n")
-				writer.Flush()
-
-				// 创建一个缓冲区来收集完整的 SSE 数据
-				buffer := &bytes.Buffer{}
-
-				// Now read and forward SSE events
-				reader := bufio.NewReader(resp.Body)
-				for {
-					line, err := reader.ReadBytes('\n')
-					if err != nil {
-						if err == io.EOF {
-							break
-						}
-						log.Printf("[MITM for %s] Error reading SSE stream: %v", r.Host, err)
-						break
-					}
-
-					// 写入客户端
-					_, err = writer.Write(line)
-					if err != nil {
-						log.Printf("[MITM for %s] Error writing SSE data to client: %v", r.Host, err)
-						break
-					}
-
-					// 同时写入缓冲区，用于后续的 HAR 记录
-					_, bufErr := buffer.Write(line)
-					if bufErr != nil {
-						log.Printf("[MITM for %s] Error writing SSE data to buffer: %v", r.Host, bufErr)
-					}
-
-					// Log the event if verbose
-					lineStr := strings.TrimSpace(string(line))
-					logSSEEvent(lineStr, s.Verbose)
-
-					// Flush the data to the client immediately
-					writer.Flush()
-				}
-
-				// 流结束后，记录 HAR 条目
-				if s.HarLogger.IsEnabled() {
-					// 创建一个新的响应，包含收集到的完整数据
-					newResp := &http.Response{
-						Status:     resp.Status,
-						StatusCode: resp.StatusCode,
-						Header:     resp.Header.Clone(),
-						Body:       io.NopCloser(bytes.NewReader(buffer.Bytes())),
-						Proto:      resp.Proto,
-						ProtoMajor: resp.ProtoMajor,
-						ProtoMinor: resp.ProtoMinor,
-					}
-
-					// 记录 HAR 条目，包含完整的 SSE 数据
-					s.logToHAR(tunneledReq, newResp, startTime, timeTaken, false) // 这里使用 false 因为我们已经有了完整的数据
-
-					if s.Verbose {
-						log.Printf("[MITM for %s] Recorded complete SSE response in HAR log (%d bytes)", r.Host, buffer.Len())
-					}
-				}
-
-				resp.Body.Close()
-				// After SSE stream ends, we need to break the loop to close the connection
-				break
-			} else {
-				// Not an SSE response, handle normally
-				if s.Verbose {
-					log.Printf("[MITM for %s] Expected SSE but got %s", r.Host, resp.Header.Get("Content-Type"))
-				}
-
-				// For non-SSE responses, proceed with normal handling
-				// Write the response back to the client over the TLS tunnel
-				err = s.tunnelHTTPSResponse(tlsClientConn, resp, reqCtx)
-				if err != nil {
-					log.Printf("[MITM for %s] Error tunneling response to client: %v", r.Host, err)
-					resp.Body.Close()
-					break
-				}
-				resp.Body.Close()
-
-				// Handle connection persistence
-				if tunneledReq.Close || resp.Close || tunneledReq.Header.Get("Connection") == "close" || resp.Header.Get("Connection") == "close" {
-					if s.Verbose {
-						log.Printf("[MITM for %s] Connection close signaled in headers or by request/response close flag.", r.Host)
-					}
-					break
-				}
-				continue
-			}
-		}
-
-		// For non-SSE requests, use normal handling
-		httpClient := &http.Client{
-			Transport: sseTransport,
-			Timeout:   30 * time.Second,
-		}
-		resp, err := httpClient.Do(outReq)
-		timeTaken := time.Since(startTime)
-
-		if err != nil {
-			log.Printf("[MITM for %s] Error sending request to target %s: %v", r.Host, targetURL.String(), err)
-			// Log to HAR even if there's an error sending the request (resp might be nil)
-			s.logToHAR(tunneledReq, nil, startTime, timeTaken, false)
-			s.notifyError(err, reqCtx)
-			break
-		}
-
-		// 创建响应上下文
-		respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
-
-		// 通知响应事件
-		modifiedResp := s.notifyResponse(respCtx)
-		if modifiedResp != resp && modifiedResp != nil {
-			resp = modifiedResp
-			respCtx.Response = resp
-		}
-
-		// Log to HAR - 但对于SSE响应，我们在处理 SSE 时记录
-		// 只为非 SSE 响应记录 HAR 条目
-		if !isServerSentEvent(resp) {
-			s.logToHAR(tunneledReq, resp, startTime, timeTaken, false)
-		}
-
-		// 如果启用了流量输出，输出请求和响应内容
-		if s.DumpTraffic {
-			s.dumpRequestBody(tunneledReq)
-			if !isServerSentEvent(resp) { // SSE响应在处理SSE时输出
-				s.dumpResponseBody(resp)
-			}
-		}
-
-		if s.Verbose {
-			log.Printf("[MITM for %s] Received response from %s: %d %s", r.Host, targetURL.String(), resp.StatusCode, resp.Status)
-		} else {
-			log.Printf("[MITM for %s] %s %s%s -> %d %s", r.Host, tunneledReq.Method, tunneledReq.Host, tunneledReq.URL.RequestURI(), resp.StatusCode, resp.Header.Get("Content-Type"))
-		}
-
-		// Check if this is a Server-Sent Events response
-		if isServerSentEvent(resp) {
-			if s.Verbose {
-				log.Printf("[MITM for %s] Detected Server-Sent Events response", r.Host)
-			}
-
-			// For SSE in MITM mode, we need to handle it differently
-			// First, write the response headers
-			writer := bufio.NewWriter(tlsClientConn)
-
-			// Write the status line
-			statusLine := fmt.Sprintf("HTTP/%d.%d %d %s\r\n",
-				resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, resp.Status)
-			writer.WriteString(statusLine)
-
-			// Write headers
-			for k, vv := range resp.Header {
-				for _, v := range vv {
-					writer.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-				}
-			}
-
-			// End of headers
-			writer.WriteString("\r\n")
-			writer.Flush()
-
-			// Now read and forward SSE events
-			reader := bufio.NewReader(resp.Body)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					if err == io.EOF {
-						break
-					}
-					log.Printf("[MITM for %s] Error reading SSE stream: %v", r.Host, err)
-					break
-				}
-
-				// Write the event data to the client
-				_, err = writer.Write(line)
-				if err != nil {
-					log.Printf("[MITM for %s] Error writing SSE data to client: %v", r.Host, err)
-					break
-				}
-
-				// Log the event if verbose
-				lineStr := strings.TrimSpace(string(line))
-				logSSEEvent(lineStr, s.Verbose)
-
-				// Flush the data to the client immediately
-				writer.Flush()
-			}
-
-			resp.Body.Close()
-			// After SSE stream ends, we need to break the loop to close the connection
-			break
-		} else {
-			// For non-SSE responses, proceed with normal handling
-			// Write the response back to the client over the TLS tunnel
-			err = s.tunnelHTTPSResponse(tlsClientConn, resp, reqCtx)
-			if err != nil {
-				log.Printf("[MITM for %s] Error tunneling response to client: %v", r.Host, err)
-				resp.Body.Close()
-				break
-			}
-			resp.Body.Close()
-		}
-
-		// Handle connection persistence
-		if tunneledReq.Close || resp.Close || tunneledReq.Header.Get("Connection") == "close" || resp.Header.Get("Connection") == "close" {
-			if s.Verbose {
-				log.Printf("[MITM for %s] Connection close signaled in headers or by request/response close flag.", r.Host)
-			}
-			break
-		}
+		// 用统一逻辑处理MITM代理
+		s.handleProxyRequest(nil, tunneledReq, targetURL.String(), transport, true, tlsClientConn)
 	}
 	if s.Verbose {
 		log.Printf("[MITM for %s] Exiting MITM processing loop.", r.Host)
