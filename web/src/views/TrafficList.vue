@@ -74,17 +74,17 @@
     </div>
 
     <!-- 可拖动分隔条 -->
-    <div 
-      class="resizer" 
-      @mousedown="startResize" 
+    <div
+      class="resizer"
+      @mousedown="startResize"
       :class="{ 'resizing': isResizing }"
       v-if="selectedEntry"
     ></div>
 
     <!-- 详情面板 -->
-    <div 
-      class="detail-panel" 
-      v-if="selectedEntry" 
+    <div
+      class="detail-panel"
+      v-if="selectedEntry"
       :style="{ height: `${detailPanelHeight}px` }"
     >
       <request-response-panel
@@ -138,15 +138,15 @@ const startResize = (e: MouseEvent) => {
 
 const handleMouseMove = (e: MouseEvent) => {
   if (!isResizing.value) return;
-  
+
   // 计算窗口总高度
   const windowHeight = window.innerHeight;
   // 计算鼠标位置相对于窗口底部的距离
   const fromBottom = windowHeight - e.clientY;
-  
+
   // 确保在最小和最大高度范围内
   let newHeight = Math.max(minHeight, Math.min(maxHeight, fromBottom));
-  
+
   // 更新详情面板高度
   detailPanelHeight.value = newHeight;
 };
@@ -166,16 +166,16 @@ onUnmounted(() => {
 // 重新连接WebSocket
 const reconnectWebSocket = () => {
   reconnecting.value = true;
-  
+
   // 先断开当前连接
   store.commit('setConnected', false);
   websocketService.disconnect();
-  
+
   // 延迟一秒后重新连接，确保前一个连接完全关闭
   setTimeout(() => {
     console.log('尝试重新建立WebSocket连接...');
     websocketService.reconnect();
-    
+
     // 设置5秒超时，如果还没有连接成功就显示错误
     setTimeout(() => {
       if (!websocketService.isConnected()) {
@@ -191,22 +191,22 @@ onMounted(() => {
   // 初始化WebSocket连接
   console.log('初始化WebSocket连接...');
   store.dispatch('initWebSocket');
-  
+
   // 初始加载数据
   refreshData();
-  
+
   // 设置WebSocket响应详情处理器
   setupWebSocketDetailHandlers();
-  
+
   // 设置定时器检查连接状态并更新传输模式
   connectionCheckTimer.value = window.setInterval(() => {
     transportMode.value = websocketService.getTransport();
-    
+
     // 如果连接状态与store中存储的状态不一致，更新状态
     const currentConnected = websocketService.isConnected();
     if (currentConnected !== isConnected.value) {
       store.commit('setConnected', currentConnected);
-      
+
       // 如果连接已恢复，尝试重新获取数据
       if (currentConnected && !isConnected.value) {
         refreshData();
@@ -225,15 +225,30 @@ const startSSERefresh = (entryId: string) => {
     clearInterval(sseRefreshTimer);
     sseRefreshTimer = null;
   }
-  
+
+  console.log(`开始SSE刷新定时器，ID: ${entryId}`);
+
   // 设置新的定时器，每秒获取一次最新的SSE响应内容
   sseRefreshTimer = setInterval(() => {
     if (selectedEntry.value && selectedEntry.value.id === entryId && selectedEntry.value.isSSE) {
+      // 检查SSE是否已经完成
+      console.log(`检查SSE状态，ID: ${entryId}, isSSECompleted: ${selectedEntry.value.isSSECompleted}`);
+
+      if (selectedEntry.value.isSSECompleted) {
+        // 如果SSE已经完成，停止刷新
+        console.log(`SSE连接已经结束，停止刷新，ID: ${entryId}`);
+        clearInterval(sseRefreshTimer as number);
+        sseRefreshTimer = null;
+        return;
+      }
+
       // 重新加载详情以获取最新的SSE内容
+      console.log(`请求SSE详情更新，ID: ${entryId}`);
       websocketService.requestRequestDetails(entryId);
       websocketService.requestResponseDetails(entryId);
     } else {
       // 如果不再查看SSE请求，停止刷新
+      console.log(`不再查看SSE请求，停止刷新，ID: ${entryId}`);
       clearInterval(sseRefreshTimer as number);
       sseRefreshTimer = null;
     }
@@ -252,10 +267,10 @@ const stopSSERefresh = () => {
 onUnmounted(() => {
   document.removeEventListener('mousemove', handleMouseMove);
   document.removeEventListener('mouseup', stopResize);
-  
+
   // 清除SSE刷新定时器
   stopSSERefresh();
-  
+
   // 清除连接检查定时器
   if (connectionCheckTimer.value !== null) {
     clearInterval(connectionCheckTimer.value);
@@ -273,7 +288,7 @@ const setupWebSocketDetailHandlers = () => {
       detailLoading.value = false;
     }
   });
-  
+
   // 响应详情处理
   websocketService.onResponseDetails((details) => {
     store.commit('setResponseDetails', details);
@@ -289,7 +304,7 @@ watch(() => isConnected.value, (newValue) => {
   if (newValue) {
     // 连接成功，清除错误提示
     store.commit('setError', null);
-    
+
     // 如果页面上没有数据，刷新数据
     if (trafficEntries.value.length === 0) {
       refreshData();
@@ -310,7 +325,7 @@ const refreshData = () => {
     // 如果未连接，先尝试重新连接
     console.log('WebSocket未连接，尝试重新连接后再获取数据');
     store.commit('setLoading', true);
-    
+
     // 给连接一些时间
     setTimeout(() => {
       // 如果连接成功，获取数据
@@ -349,7 +364,7 @@ const handleRowClick = (row: TrafficEntry) => {
   if (clickDebounceTimer.value) {
     clearTimeout(clickDebounceTimer.value);
   }
-  
+
   clickDebounceTimer.value = setTimeout(() => {
     if (lastClickedId.value !== row.id) {
       lastClickedId.value = row.id;
@@ -357,11 +372,11 @@ const handleRowClick = (row: TrafficEntry) => {
       detailLoading.value = true;
       // 设置被选中的条目
       store.commit('setSelectedEntry', row);
-      
+
       // 请求详情
       websocketService.requestRequestDetails(row.id);
       websocketService.requestResponseDetails(row.id);
-      
+
       // 如果是SSE请求，启动刷新定时器
       if (row.isSSE) {
         startSSERefresh(row.id);
@@ -547,4 +562,4 @@ const getStatusClass = (statusCode: number) => {
 body.resizing {
   cursor: ns-resize !important;
 }
-</style> 
+</style>

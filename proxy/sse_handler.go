@@ -155,7 +155,17 @@ func (s *Server) handleSSE(w http.ResponseWriter, respCtx *ResponseContext) erro
 		}
 	}
 
-	// 流结束后，记录 HAR 条目
+	// 流结束后，记录 HAR 条目并标记SSE已完成
+	// 通知SSE已完成
+	if respCtx != nil && respCtx.ReqCtx != nil {
+		// 发送一个特殊的SSE完成事件
+		s.notifySSE("__SSE_COMPLETED__", respCtx)
+
+		if s.Verbose {
+			log.Printf("[SSE] Stream completed, notified handlers")
+		}
+	}
+
 	if s.HarLogger.IsEnabled() {
 		// 计算流处理时间
 		timeTaken := time.Since(startTime)
