@@ -342,38 +342,42 @@ const getStatusText = (statusCode: number) => {
 const getHexView = (data: any): string => {
   if (!data) return '';
 
+  // 将数据转换为字符串
   let str = typeof data === 'string' ? data : JSON.stringify(data);
+
+  // 将字符串转换为UTF-8字节数组
+  let bytes = new TextEncoder().encode(str);
   let result = '';
-  let asciiResult = '';
 
-  for (let i = 0; i < str.length; i++) {
-    // 每16个字符换行
-    if (i % 16 === 0 && i !== 0) {
-      result += '  ' + asciiResult + '\n';
-      asciiResult = '';
+  // 每16个字节为一行
+  for (let i = 0; i < bytes.length; i += 16) {
+    // 添加偏移量
+    result += (i).toString(16).padStart(8, '0') + ': ';
+
+    let hexPart = '';
+    let asciiPart = '';
+
+    // 处理这一行的字节
+    for (let j = 0; j < 16; j++) {
+      if (i + j < bytes.length) {
+        // 添加十六进制表示，保持两位宽度
+        hexPart += bytes[i + j].toString(16).padStart(2, '0') + ' ';
+        // 添加ASCII表示
+        const byte = bytes[i + j];
+        asciiPart += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
+      } else {
+        // 用空格填充未满16字节的行
+        hexPart += '   ';
+      }
     }
 
-    // 计算偏移量并添加到行首
-    if (i % 16 === 0) {
-      result += (i).toString(16).padStart(8, '0') + ': ';
+    // 确保十六进制部分对齐，添加到结果中
+    result += hexPart + ' ' + asciiPart;
+
+    // 如果不是最后一行，添加换行符
+    if (i + 16 < bytes.length) {
+      result += '\n';
     }
-
-    // 获取字符的十六进制表示
-    const charCode = str.charCodeAt(i);
-    const hex = charCode.toString(16).padStart(2, '0');
-    result += hex + ' ';
-
-    // 为ASCII表示准备字符
-    asciiResult += (charCode >= 32 && charCode <= 126) ? str[i] : '.';
-  }
-
-  // 处理最后一行的空白和ASCII表示
-  const lastLineLength = str.length % 16;
-  if (lastLineLength > 0) {
-    const padding = 16 - lastLineLength;
-    result += '   '.repeat(padding) + '  ' + asciiResult;
-  } else if (str.length > 0) {
-    result += '  ' + asciiResult;
   }
 
   return result;
