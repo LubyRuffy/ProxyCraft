@@ -219,6 +219,31 @@ func (ws *WebSocketServer) formatRequestDetails(entry *handlers.TrafficEntry) ma
 		headers[name] = strings.Join(values, "; ")
 	}
 
+	// 添加Host字段，因为Go的http.Request.Header不包含Host字段
+	// Host字段在Go中被特殊处理，存储在Request.Host属性中
+	if entry.Host != "" && headers["Host"] == "" {
+		headers["Host"] = entry.Host
+	}
+
+	// 添加其他可能缺失的重要HTTP头部字段
+	// 添加User-Agent字段，如果不存在
+	if headers["User-Agent"] == "" {
+		// 尝试从请求头中获取User-Agent
+		if ua := entry.RequestHeaders.Get("User-Agent"); ua != "" {
+			headers["User-Agent"] = ua
+		}
+	}
+
+	// 添加Content-Type字段，如果不存在
+	if headers["Content-Type"] == "" && entry.RequestHeaders.Get("Content-Type") != "" {
+		headers["Content-Type"] = entry.RequestHeaders.Get("Content-Type")
+	}
+
+	// 添加Content-Length字段，如果不存在且请求体不为空
+	if headers["Content-Length"] == "" && len(entry.RequestBody) > 0 {
+		headers["Content-Length"] = fmt.Sprintf("%d", len(entry.RequestBody))
+	}
+
 	// 处理请求体
 	var body interface{}
 
@@ -250,6 +275,16 @@ func (ws *WebSocketServer) formatResponseDetails(entry *handlers.TrafficEntry) m
 	headers := make(map[string]string)
 	for name, values := range entry.ResponseHeaders {
 		headers[name] = strings.Join(values, "; ")
+	}
+
+	// 确保Content-Type字段存在
+	if entry.ContentType != "" && headers["Content-Type"] == "" {
+		headers["Content-Type"] = entry.ContentType
+	}
+
+	// 确保Content-Length字段存在
+	if entry.ContentSize > 0 && headers["Content-Length"] == "" {
+		headers["Content-Length"] = fmt.Sprintf("%d", entry.ContentSize)
 	}
 
 	// 处理响应体
