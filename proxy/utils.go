@@ -47,6 +47,13 @@ func (s *Server) logToHAR(req *http.Request, resp *http.Response, startTime time
 
 // createRequestContext 创建一个请求上下文
 func (s *Server) createRequestContext(req *http.Request, targetURL string, startTime time.Time, isHTTPS bool) *RequestContext {
+	if req.URL.Scheme == "" {
+		if isHTTPS {
+			req.URL.Scheme = "https"
+		} else {
+			req.URL.Scheme = "http"
+		}
+	}
 	return &RequestContext{
 		Request:   req,
 		StartTime: startTime,
