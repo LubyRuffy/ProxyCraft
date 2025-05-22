@@ -12,3 +12,6 @@
 ## 其他情况
 - https非443端口，比如8888：`curl -x http://127.0.0.1:8080 https://ip.bmh.im:8888/`
 - 非http协议，比如25对应的smtp协议：`ncat --proxy 127.0.0.1:8080 --proxy-type http smtp.qq.com 25` 目前burp也不支持
+
+## ui测试
+- 测试json的格式化和高亮：`curl -x http://127.0.0.1:8080 -v --http2 http://ip.bmh.im/h`

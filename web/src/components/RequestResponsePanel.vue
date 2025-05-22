@@ -67,8 +67,9 @@
             <!-- 请求体 -->
             <div v-if="requestHasBody" class="body-container">
               <div v-if="requestView === 'pretty'" class="pretty-view">
-                <pre v-if="typeof request.body === 'string'">{{ request.body }}</pre>
-                <pre v-else>{{ JSON.stringify(request.body, null, 2) }}</pre>
+                <pre v-if="typeof request.body === 'string' && isJson(request.body)" v-html="formatJson(request.body)"></pre>
+                <pre v-else-if="typeof request.body === 'string'">{{ request.body }}</pre>
+                <pre v-else v-html="formatJson(request.body)"></pre>
               </div>
               <div v-else-if="requestView === 'raw'" class="raw-view">
                 <pre>{{ typeof request.body === 'string' ? request.body : JSON.stringify(request.body) }}</pre>
@@ -129,8 +130,9 @@
             <!-- 响应体 -->
             <div v-if="responseHasBody" class="body-container">
               <div v-if="responseView === 'pretty'" class="pretty-view">
-                <pre v-if="typeof response.body === 'string'">{{ response.body }}</pre>
-                <pre v-else>{{ JSON.stringify(response.body, null, 2) }}</pre>
+                <pre v-if="typeof response.body === 'string' && isJson(response.body)" v-html="formatJson(response.body)"></pre>
+                <pre v-else-if="typeof response.body === 'string'">{{ response.body }}</pre>
+                <pre v-else v-html="formatJson(response.body)"></pre>
               </div>
               <div v-else-if="responseView === 'raw'" class="raw-view">
                 <pre>{{ typeof response.body === 'string' ? response.body : JSON.stringify(response.body) }}</pre>
@@ -152,6 +154,12 @@
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import { RequestDetails, ResponseDetails, TrafficEntry } from '../store';
 import { Search, ArrowUp, ArrowDown, Setting, Share, CopyDocument, Download } from '@element-plus/icons-vue';
+import hljs from 'highlight.js/lib/core';
+import json from 'highlight.js/lib/languages/json';
+import 'highlight.js/styles/github.css';
+
+// 只注册需要的语言以减小打包体积
+hljs.registerLanguage('json', json);
 
 const props = defineProps<{
   request: RequestDetails | null;
@@ -434,6 +442,31 @@ const generateCurlCommand = (): string => {
 /**
  * 复制cURL命令到剪贴板
  */
+// 检查字符串是否为JSON格式
+const isJson = (str: string): boolean => {
+  try {
+    JSON.parse(str);
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+// 格式化并高亮JSON
+const formatJson = (content: string | any): string => {
+  try {
+    // 如果输入是JSON字符串，先解析再格式化
+    const jsonObj = typeof content === 'string' ? JSON.parse(content) : content;
+    const formatted = JSON.stringify(jsonObj, null, 2);
+    // 使用pre标签包装，确保正确应用hljs的样式
+    const highlighted = hljs.highlight(formatted, { language: 'json' }).value;
+    return `<code class="hljs language-json">${highlighted}</code>`;
+  } catch (e) {
+    console.error('JSON格式化失败:', e);
+    return String(content);
+  }
+};
+
 const copyAsCurl = async () => {
   const curlCommand = generateCurlCommand();
   if (!curlCommand) {
@@ -689,6 +722,57 @@ const copyAsCurl = async () => {
   background-color: #f9f9f9;
   border-radius: 3px;
   overflow: auto;
+}
+
+/* JSON高亮样式覆盖 */
+.pretty-view pre {
+  background-color: transparent !important;
+}
+
+/* highlight.js的JSON语法高亮样式 */
+.pretty-view .hljs {
+  color: #24292e;
+  background: transparent;
+  padding: 0;
+}
+
+.pretty-view .hljs-attr {
+  color: #005cc5;
+}
+
+.pretty-view .hljs-string {
+  color: #22863a;
+}
+
+.pretty-view .hljs-number {
+  color: #005cc5;
+}
+
+.pretty-view .hljs-literal {
+  color: #005cc5;
+}
+
+.pretty-view .hljs-punctuation {
+  color: #24292e;
+}
+
+.pretty-view .hljs-comment {
+  color: #6a737d;
+}
+
+/* 确保pre和code标签正确显示 */
+.pretty-view pre {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.pretty-view code {
+  font-family: Monaco, Menlo, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .hex-dump {
