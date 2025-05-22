@@ -233,10 +233,6 @@ func (h *WebHandler) OnRequest(ctx *proxy.RequestContext) *http.Request {
 	// 生成ID并准备数据
 	id := h.generateID()
 
-	if ctx.Request.URL.Scheme == "" {
-		ctx.Request.URL.Scheme = "http"
-	}
-
 	// 准备新的流量条目，尽可能在锁外完成
 	entry := &TrafficEntry{
 		ID:             id,
