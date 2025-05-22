@@ -104,6 +104,7 @@ import { ElMessageBox } from 'element-plus';
 import RequestResponsePanel from '../components/RequestResponsePanel.vue';
 import { TrafficEntry } from '../store';
 import websocketService, { WebSocketEvent } from '../services/websocket';
+import { getStatusClass, formatBytes } from '../utils/formatters';
 
 const store = useStore();
 const transportMode = ref('');
@@ -395,29 +396,6 @@ const handleRowClick = (row: TrafficEntry) => {
       }
     }
   }, 200);
-};
-
-// 格式化字节大小
-const formatBytes = (bytes: number) => {
-  if (bytes === 0 || bytes === undefined) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
-// 获取状态码的CSS类
-const getStatusClass = (statusCode: number) => {
-  if (statusCode >= 200 && statusCode < 300) {
-    return 'status-success';
-  } else if (statusCode >= 300 && statusCode < 400) {
-    return 'status-redirect';
-  } else if (statusCode >= 400 && statusCode < 500) {
-    return 'status-client-error';
-  } else if (statusCode >= 500) {
-    return 'status-server-error';
-  }
-  return '';
 };
 </script>
 
