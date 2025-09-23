@@ -139,10 +139,9 @@ func (t *headerInterceptingTransport) RoundTrip(req *http.Request) (*http.Respon
 // earlySSEDetector is a custom http.RoundTripper that can detect and handle SSE responses
 // immediately after receiving response headers, before any of the response body is read
 type earlySSEDetector struct {
-	base           http.RoundTripper
-	responseWriter interface{} // Can be http.ResponseWriter or *tls.Conn
-	server         *Server
-	verbose        bool
+	base    http.RoundTripper
+	server  *Server
+	verbose bool
 }
 
 // RoundTrip implements the http.RoundTripper interface

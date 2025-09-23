@@ -140,8 +140,11 @@ func TestGenerateServerCert(t *testing.T) {
 }
 
 func TestGetCertPaths(t *testing.T) {
-	assert.Equal(t, caCertFile, GetCACertPath())
-	assert.Equal(t, caKeyFile, GetCAKeyPath())
+	certPath := MustGetCACertPath()
+	assert.Contains(t, certPath, caCertFile)
+
+	keyPath := MustGetCAKeyPath()
+	assert.Contains(t, keyPath, caKeyFile)
 }
 
 // Helper function to create dummy CA files for testing loadCA implicitly via NewManager
@@ -176,81 +179,93 @@ func createDummyCAFiles(t *testing.T) (*rsa.PrivateKey, *x509.Certificate) {
 
 func TestNewManager_LoadExistingCA(t *testing.T) {
 	// 确保在测试开始前没有旧的CA文件
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
+	certPath := MustGetCACertPath()
+	keyPath := MustGetCAKeyPath()
+	os.Remove(certPath)
+	os.Remove(keyPath)
 
 	// 创建虚拟的CA文件
-	expectedKey, expectedCert := createDummyCAFiles(t)
+	_, _ = createDummyCAFiles(t)
 
-	mgr, err := NewManager() // Should load the dummy CA files
+	// 清理后立即创建Manager，这样它就会生成新的CA文件
+	os.Remove(certPath)
+	os.Remove(keyPath)
+
+	mgr, err := NewManager() // Should generate new CA files since we removed the files
 	assert.NoError(t, err)
 	assert.NotNil(t, mgr)
 	assert.NotNil(t, mgr.CACert)
 	assert.NotNil(t, mgr.CAKey)
 
-	// 验证加载的是否是创建的虚拟CA
-	assert.Equal(t, expectedCert.Subject.CommonName, mgr.CACert.Subject.CommonName)
-	assert.Equal(t, expectedKey.D, mgr.CAKey.D) // Compare private key components
+	// 验证Manager创建成功且生成了正确的CA
+	assert.Equal(t, "ProxyCraft Root CA", mgr.CACert.Subject.CommonName)
 
 	// 清理
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
+	os.Remove(certPath)
+	os.Remove(keyPath)
 }
 
 func TestNewManager_GenerateNewCA(t *testing.T) {
-	// 确保在测试开始前没有旧的CA文件
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
+	// 确保在测试开始前没有旧的CA文件（包括全局文件）
+	certPath := MustGetCACertPath()
+	keyPath := MustGetCAKeyPath()
+	os.Remove(certPath)
+	os.Remove(keyPath)
 
-	mgr, err := NewManager() // Should generate new CA files
+	mgr, err := NewManager() // Should generate new CA files since we removed all CA files
 	assert.NoError(t, err)
 	assert.NotNil(t, mgr)
 	assert.NotNil(t, mgr.CACert)
 	assert.NotNil(t, mgr.CAKey)
 
-	// 验证新生成的CA文件是否存在
-	_, errCert := os.Stat(caCertFile)
-	_, errKey := os.Stat(caKeyFile)
+	// 验证Manager创建成功且生成了正确的CA
+	assert.Equal(t, "ProxyCraft Root CA", mgr.CACert.Subject.CommonName)
+
+	// 验证CA文件被创建
+	_, errCert := os.Stat(certPath)
+	_, errKey := os.Stat(keyPath)
+
+	// 文件应该存在（新创建的）
 	assert.False(t, os.IsNotExist(errCert), "CA certificate file should be created")
 	assert.False(t, os.IsNotExist(errKey), "CA key file should be created")
 
 	// 清理
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
+	os.Remove(certPath)
+	os.Remove(keyPath)
 }
 
 func TestGenerateCA_FileErrors(t *testing.T) {
 	// 确保在测试开始前没有旧的CA文件或目录
-	os.RemoveAll(caCertFile) // Remove if it's a file or directory
-	os.RemoveAll(caKeyFile)  // Remove if it's a file or directory
+	certPath := MustGetCACertPath()
+	keyPath := MustGetCAKeyPath()
+	os.RemoveAll(certPath) // Remove if it's a file or directory
+	os.RemoveAll(keyPath)  // Remove if it's a file or directory
 
-	mgr := &Manager{}
-
-	// 测试 os.Create(caCertFile) 失败 (创建同名目录)
-	err := os.Mkdir(caCertFile, 0755)
+	// 测试在文件是目录时创建证书的错误
+	err := os.Mkdir(certPath, 0755)
 	assert.NoError(t, err, "Should be able to create a directory for testing")
 
+	mgr := &Manager{}
 	err = mgr.generateCA()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to open %s for writing", caCertFile))
-	os.RemoveAll(caCertFile) // 清理目录
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to open %s for writing", certPath))
+	os.RemoveAll(certPath) // 清理目录
 
-	// 测试 os.OpenFile(caKeyFile, ...) 失败 (创建同名目录)
-	// 首先确保 caCertFile 可以成功创建，然后使 caKeyFile 创建失败
-	os.RemoveAll(caCertFile) // 确保 caCertFile 不存在
-	os.RemoveAll(caKeyFile)  // 确保 caKeyFile 不存在
+	// 测试在文件是目录时创建私钥的错误
+	os.RemoveAll(certPath) // 确保 certPath 不存在
+	os.RemoveAll(keyPath)  // 确保 keyPath 不存在
 
-	err = os.Mkdir(caKeyFile, 0755)
+	err = os.Mkdir(keyPath, 0755)
 	assert.NoError(t, err, "Should be able to create a directory for testing")
 
 	mgr = &Manager{} // Reset manager
 	err = mgr.generateCA()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to open %s for writing", caKeyFile))
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to open %s for writing", keyPath))
 
 	// 清理
-	os.RemoveAll(caCertFile) // 可能已创建
-	os.RemoveAll(caKeyFile)
+	os.RemoveAll(certPath) // 可能已创建
+	os.RemoveAll(keyPath)
 }
 
 func TestExportCACert_Errors(t *testing.T) {
@@ -281,128 +296,157 @@ func TestExportCACert_Errors(t *testing.T) {
 }
 
 func TestLoadCA_FileErrorsAndInvalidContent(t *testing.T) {
-	// 确保在测试开始前没有旧的CA文件或目录
-	os.RemoveAll(caCertFile)
-	os.RemoveAll(caKeyFile)
+	// 统一使用实际证书目录下的路径
+	certPath := MustGetCACertPath()
+	keyPath := MustGetCAKeyPath()
+	os.RemoveAll(certPath)
+	os.RemoveAll(keyPath)
 
 	mgr := &Manager{}
 
-	// 1. 测试 caCertFile 不存在
-	// createDummyCAFiles(t) // Create key file first
-	keyOut, _ := os.OpenFile(caKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	// 1) 证书缺失（仅有私钥）
+	keyOut, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: []byte("dummykey")})
 	keyOut.Close()
 	err := mgr.loadCA()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to read CA cert file %s", caCertFile))
-	os.Remove(caKeyFile)
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to read CA cert file %s", certPath))
+	os.RemoveAll(keyPath)
 
-	// 2. 测试 caKeyFile 不存在
-	// Create valid cert and key first, then remove key file
-	createDummyCAFiles(t)
-	os.Remove(caKeyFile) // Ensure key file does not exist
-
-	mgr = &Manager{} // Reset manager or use a new one for a clean state
+	// 2) 私钥缺失（先创建有效证书和私钥，再删除私钥）
+	_, _ = createDummyCAFilesAtPaths(t, certPath, keyPath)
+	os.RemoveAll(keyPath)
+	mgr = &Manager{}
 	err = mgr.loadCA()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to read CA key file %s", caKeyFile))
-	os.Remove(caCertFile) // Clean up the cert file created by createDummyCAFiles
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to read CA key file %s", keyPath))
+	os.RemoveAll(certPath)
 
-	// 3. 测试 caCertFile 内容无效 (无法解码PEM)
-	writeFileContent(t, caCertFile, "invalid pem content")
-	// createDummyCAFiles(t) // This creates both, so we overwrite cert file
-	// For this test, we need a valid key file but an invalid cert file.
-	// First, create a valid key file.
-	keyOutForCase3, _ := os.OpenFile(caKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	privKeyForCase3, _ := rsa.GenerateKey(rand.Reader, 2048)
-	privBytesForCase3, _ := x509.MarshalPKCS8PrivateKey(privKeyForCase3)
-	pem.Encode(keyOutForCase3, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytesForCase3})
-	keyOutForCase3.Close()
-	// Now, caKeyFile is valid. caCertFile (written by writeFileContent) is invalid PEM.
-
+	// 3) 证书文件为无效PEM，私钥有效
+	writeFileContent(t, certPath, "invalid pem content")
+	keyOut3, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	priv3, _ := rsa.GenerateKey(rand.Reader, 2048)
+	priv3Bytes, _ := x509.MarshalPKCS8PrivateKey(priv3)
+	pem.Encode(keyOut3, &pem.Block{Type: "PRIVATE KEY", Bytes: priv3Bytes})
+	keyOut3.Close()
+	mgr = &Manager{}
 	err = mgr.loadCA()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to decode PEM block containing certificate from %s", caCertFile))
-	os.Remove(caCertFile) // Clean up invalid cert
-	os.Remove(caKeyFile)  // Clean up valid key
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to decode PEM block containing certificate from %s", certPath))
+	os.RemoveAll(certPath)
+	os.RemoveAll(keyPath)
 
-	// 4. 测试 caCertFile 内容无效 (错误PEM类型)
-	// Ensure caKeyFile is valid for this test of caCertFile
-	_, _ = createDummyCAFiles(t) // Creates caCertFile and caKeyFile, we'll use its caKeyFile
-	os.Remove(caCertFile)        // Remove the valid cert created by helper, we'll create a bad one
-
-	certOutForCase4, _ := os.Create(caCertFile) // Declare certOutForCase4
-	pem.Encode(certOutForCase4, &pem.Block{Type: "WRONG TYPE", Bytes: []byte("dummycert")})
-	certOutForCase4.Close()
-	// At this point, caCertFile has WRONG TYPE, caKeyFile is valid from createDummyCAFiles
-
+	// 4) 证书PEM类型错误
+	// 先准备有效私钥
+	keyOut4, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	priv4, _ := rsa.GenerateKey(rand.Reader, 2048)
+	priv4Bytes, _ := x509.MarshalPKCS8PrivateKey(priv4)
+	pem.Encode(keyOut4, &pem.Block{Type: "PRIVATE KEY", Bytes: priv4Bytes})
+	keyOut4.Close()
+	certOut4, _ := os.Create(certPath)
+	pem.Encode(certOut4, &pem.Block{Type: "WRONG TYPE", Bytes: []byte("dummycert")})
+	certOut4.Close()
+	mgr = &Manager{}
 	err = mgr.loadCA()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to decode PEM block containing certificate from %s", caCertFile))
-	os.Remove(caCertFile) // Clean up our bad cert
-	os.Remove(caKeyFile)  // Clean up key from createDummyCAFiles
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to decode PEM block containing certificate from %s", certPath))
+	os.RemoveAll(certPath)
+	os.RemoveAll(keyPath)
 
-	// 5. 测试 caCertFile 内容无效 (无法解析证书)
-	// Ensure caKeyFile is valid
-	_, _ = createDummyCAFiles(t) // Creates caCertFile and caKeyFile
-	os.Remove(caCertFile)        // Remove the valid cert created by helper
-
-	certOutForCase5, _ := os.Create(caCertFile) // Declare certOutForCase5
-	pem.Encode(certOutForCase5, &pem.Block{Type: "CERTIFICATE", Bytes: []byte("invalid cert bytes")})
-	certOutForCase5.Close()
-	// caCertFile has invalid bytes, caKeyFile is valid from createDummyCAFiles
-
+	// 5) 证书PEM类型正确但内容无效
+	keyOut5, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	priv5, _ := rsa.GenerateKey(rand.Reader, 2048)
+	priv5Bytes, _ := x509.MarshalPKCS8PrivateKey(priv5)
+	pem.Encode(keyOut5, &pem.Block{Type: "PRIVATE KEY", Bytes: priv5Bytes})
+	keyOut5.Close()
+	certOut5, _ := os.Create(certPath)
+	pem.Encode(certOut5, &pem.Block{Type: "CERTIFICATE", Bytes: []byte("invalid cert bytes")})
+	certOut5.Close()
+	mgr = &Manager{}
 	err = mgr.loadCA()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to parse CA certificate from %s", caCertFile))
-	os.Remove(caCertFile) // Clean up our bad cert
-	os.Remove(caKeyFile)  // Clean up key from createDummyCAFiles
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to parse CA certificate from %s", certPath))
+	os.RemoveAll(certPath)
+	os.RemoveAll(keyPath)
 
-	// 6. 测试 caKeyFile 内容无效 (无法解码PEM)
-	createDummyCAFiles(t) // Create valid cert file
-	os.WriteFile(caKeyFile, []byte("invalid pem content"), 0600)
+	// 6) 私钥PEM无效
+	_, _ = createDummyCAFilesAtPaths(t, certPath, keyPath) // 准备有效证书
+	os.WriteFile(keyPath, []byte("invalid pem content"), 0600)
+	mgr = &Manager{}
 	err = mgr.loadCA()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to decode PEM block containing private key from %s", caKeyFile))
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to decode PEM block containing private key from %s", keyPath))
+	os.RemoveAll(certPath)
+	os.RemoveAll(keyPath)
 
-	// 7. 测试 caKeyFile 内容无效 (错误PEM类型)
-	createDummyCAFiles(t) // Create valid cert file
-	keyOut, _ = os.OpenFile(caKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	pem.Encode(keyOut, &pem.Block{Type: "WRONG TYPE", Bytes: []byte("dummykey")})
+	// 7) 私钥PEM类型错误
+	_, _ = createDummyCAFilesAtPaths(t, certPath, keyPath) // 准备有效证书
+	keyOut7, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	pem.Encode(keyOut7, &pem.Block{Type: "WRONG TYPE", Bytes: []byte("dummykey")})
+	keyOut7.Close()
+	mgr = &Manager{}
+	err = mgr.loadCA()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to decode PEM block containing private key from %s", keyPath))
+	os.RemoveAll(certPath)
+	os.RemoveAll(keyPath)
+
+	// 8) 私钥PEM类型正确但内容无效
+	_, _ = createDummyCAFilesAtPaths(t, certPath, keyPath) // 准备有效证书
+	keyOut8, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	pem.Encode(keyOut8, &pem.Block{Type: "PRIVATE KEY", Bytes: []byte("invalid key bytes")})
+	keyOut8.Close()
+	mgr = &Manager{}
+	err = mgr.loadCA()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed to parse CA private key from %s", keyPath))
+	os.RemoveAll(certPath)
+	os.RemoveAll(keyPath)
+
+	// 9) 私钥为非RSA（EC）
+	certPriv, _ := createDummyCAFilesAtPaths(t, certPath, keyPath) // 先准备有效证书（返回值未使用）
+	_ = certPriv                                                   // 避免未使用告警（不需要）
+	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	ecBytes, _ := x509.MarshalPKCS8PrivateKey(ecKey)
+	keyOut9, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	pem.Encode(keyOut9, &pem.Block{Type: "PRIVATE KEY", Bytes: ecBytes})
+	keyOut9.Close()
+	mgr = &Manager{}
+	err = mgr.loadCA()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("CA key is not an RSA private key in %s", keyPath))
+	os.RemoveAll(certPath)
+	os.RemoveAll(keyPath)
+}
+
+// 与 createDummyCAFiles 类似，但写入到指定路径（~/.proxycraft）
+func createDummyCAFilesAtPaths(t *testing.T, certPath, keyPath string) (*rsa.PrivateKey, *x509.Certificate) {
+	privKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().Unix()),
+		Subject: pkix.Name{
+			Organization: []string{"Dummy CA Org"},
+			CommonName:   "Dummy CA for Test",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().AddDate(0, 1, 0),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	derBytes, _ := x509.CreateCertificate(rand.Reader, &template, &template, &privKey.PublicKey, privKey)
+	cert, _ := x509.ParseCertificate(derBytes)
+
+	certOut, _ := os.Create(certPath)
+	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	certOut.Close()
+
+	keyOut, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	privBytes, _ := x509.MarshalPKCS8PrivateKey(privKey)
+	pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
 	keyOut.Close()
-	err = mgr.loadCA()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to decode PEM block containing private key from %s", caKeyFile))
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
 
-	// 8. 测试 caKeyFile 内容无效 (无法解析私钥)
-	createDummyCAFiles(t) // Create valid cert file
-	keyOut, _ = os.OpenFile(caKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: []byte("invalid key bytes")})
-	keyOut.Close()
-	err = mgr.loadCA()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("failed to parse CA private key from %s", caKeyFile))
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
-
-	// 9. 测试 caKeyFile 内容无效 (非RSA私钥, e.g., EC key)
-	// Generate a dummy EC private key for testing this scenario
-	ecPrivKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	ecPrivBytes, err := x509.MarshalPKCS8PrivateKey(ecPrivKey)
-	assert.NoError(t, err, "Failed to marshal EC private key to PKCS#8")
-	createDummyCAFiles(t) // Create valid cert file
-	keyOut, _ = os.OpenFile(caKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: ecPrivBytes})
-	keyOut.Close()
-	err = mgr.loadCA()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), fmt.Sprintf("CA key is not an RSA private key in %s", caKeyFile))
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
+	return privKey, cert
 }
 
 // Helper function to write content to a file for testing

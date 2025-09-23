@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,73 +11,248 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
+)
+
+var (
+	errSSEStreamHandled      = errors.New("sse stream handled")
+	errHijackingNotSupported = errors.New("hijacking not supported")
 )
 
 // handleHTTPS handles CONNECT requests for MITM or direct tunneling
 func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received CONNECT request for: %s\n", r.Host)
+	log.Printf("Received CONNECT request for: %s", r.Host)
 
-	// 解析目标主机和端口
-	hostPort := r.Host
-	if !strings.Contains(hostPort, ":") {
-		hostPort = hostPort + ":443" // 默认HTTPS端口
+	session, err := newHTTPSConnectSession(s, w, r)
+	if err != nil {
+		if errors.Is(err, errHijackingNotSupported) {
+			http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+		}
+		log.Printf("Failed to establish CONNECT session for %s: %v", r.Host, err)
+		return
+	}
+	defer session.Close()
+
+	session.logNegotiatedProtocol()
+
+	if session.usesHTTP2() {
+		session.proxyHTTP2()
+		return
 	}
 
-	// 通知隧道建立事件
-	s.notifyTunnelEstablished(hostPort, true)
+	if err := session.proxyHTTP1(); err != nil {
+		log.Printf("[MITM for %s] Error handling tunneled requests: %v", r.Host, err)
+	}
+}
 
-	// 劫持客户端连接
+type httpsConnectSession struct {
+	server          *Server
+	connectReq      *http.Request
+	hostPort        string
+	hostname        string
+	rawConn         net.Conn
+	tlsConn         *tls.Conn
+	negotiatedProto string
+}
+
+func newHTTPSConnectSession(server *Server, w http.ResponseWriter, r *http.Request) (*httpsConnectSession, error) {
+	hostPort := ensurePort(r.Host)
+	server.notifyTunnelEstablished(hostPort, true)
+
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		log.Println("Hijacking not supported")
-		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
-		return
+		return nil, errHijackingNotSupported
 	}
-	clientConn, clientWriter, err := hijacker.Hijack()
+
+	rawConn, rw, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("Error hijacking connection: %v", err)
-		http.Error(w, "error hijacking connection", http.StatusInternalServerError)
-		return
-	}
-	defer clientConn.Close()
-
-	// Send 200 Connection Established response
-	responseStr := r.Proto + " 200 Connection Established\r\n\r\n"
-	if _, err := clientWriter.WriteString(responseStr); err != nil {
-		log.Printf("Error writing 200 response: %v", err)
-		return
-	}
-	if err := clientWriter.Flush(); err != nil {
-		log.Printf("Error flushing response: %v", err)
-		return
+		return nil, fmt.Errorf("error hijacking connection: %w", err)
 	}
 
-	// 生成服务器证书
-	// Extract hostname without port for certificate generation
-	hostname := r.Host
-	if h, _, err := net.SplitHostPort(r.Host); err == nil {
-		hostname = h
+	if err := sendConnectionEstablished(r, rw); err != nil {
+		_ = rawConn.Close()
+		return nil, err
 	}
+
+	hostname := extractHostname(r.Host)
+
+	tlsConn, negotiatedProto, err := server.startMITMTLS(rawConn, hostname, r.RemoteAddr)
+	if err != nil {
+		_ = rawConn.Close()
+		return nil, err
+	}
+
+	return &httpsConnectSession{
+		server:          server,
+		connectReq:      r,
+		hostPort:        hostPort,
+		hostname:        hostname,
+		rawConn:         rawConn,
+		tlsConn:         tlsConn,
+		negotiatedProto: negotiatedProto,
+	}, nil
+}
+
+func (s *httpsConnectSession) Close() {
+	if s.tlsConn != nil {
+		_ = s.tlsConn.Close()
+		s.tlsConn = nil
+	} else if s.rawConn != nil {
+		_ = s.rawConn.Close()
+		s.rawConn = nil
+	}
+}
+
+func (s *httpsConnectSession) logNegotiatedProtocol() {
+	if !s.server.Verbose {
+		return
+	}
+	proto := s.negotiatedProto
+	if proto == "" {
+		proto = "http/1.1"
+	}
+	log.Printf("[MITM for %s] Negotiated protocol: %s", s.connectReq.Host, proto)
+}
+
+func (s *httpsConnectSession) usesHTTP2() bool {
+	return s.negotiatedProto == "h2"
+}
+
+func (s *httpsConnectSession) proxyHTTP2() {
+	s.server.handleHTTP2MITM(s.tlsConn, s.connectReq)
+}
+
+func (s *httpsConnectSession) proxyHTTP1() error {
+	defer func() {
+		if s.server.Verbose {
+			log.Printf("[MITM for %s] Exiting MITM processing loop.", s.connectReq.Host)
+		}
+	}()
+
+	clientReader := bufio.NewReader(s.tlsConn)
+	for {
+		tunneledReq, err := http.ReadRequest(clientReader)
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				log.Printf("[MITM for %s] Client closed connection or EOF: %v", s.connectReq.Host, err)
+				return nil
+			}
+			if opError, ok := err.(*net.OpError); ok && opError.Err != nil && opError.Err.Error() == "tls: use of closed connection" {
+				log.Printf("[MITM for %s] TLS connection closed by client: %v", s.connectReq.Host, err)
+				return nil
+			}
+			log.Printf("[MITM for %s] Error reading request from client: %v", s.connectReq.Host, err)
+			return fmt.Errorf("read tunneled request: %w", err)
+		}
+
+		log.Printf("[MITM for %s] Received tunneled request: %s %s%s %s",
+			s.connectReq.Host,
+			tunneledReq.Method,
+			tunneledReq.Host,
+			tunneledReq.URL.String(),
+			tunneledReq.Proto,
+		)
+
+		if err := s.handleTunneledRequest(tunneledReq); err != nil {
+			if errors.Is(err, errSSEStreamHandled) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func (s *httpsConnectSession) handleTunneledRequest(tunneledReq *http.Request) error {
+	targetURL := &url.URL{
+		Scheme:   "https",
+		Host:     s.connectReq.Host,
+		Path:     tunneledReq.URL.Path,
+		RawQuery: tunneledReq.URL.RawQuery,
+	}
+
+	baseTransport := s.server.newTransport(s.connectReq.Host, true)
+	transport := s.server.wrapTransportForSSE(baseTransport)
+
+	proxyReq, reqCtx, potentialSSE, startTime, err := s.server.prepareProxyRequest(tunneledReq, targetURL.String(), true)
+	if err != nil {
+		writeGatewayError(s.tlsConn, s.connectReq.Proto)
+		return fmt.Errorf("create proxy request: %w", err)
+	}
+
+	logPotentialSSE(s.server.Verbose, "[Proxy]", potentialSSE)
+
+	resp, timeTaken, err := s.server.sendProxyRequest(proxyReq, transport, potentialSSE, startTime)
+	if err != nil {
+		s.server.recordProxyError(err, reqCtx, startTime, timeTaken)
+		writeGatewayError(s.tlsConn, s.connectReq.Proto)
+		return fmt.Errorf("send proxy request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respCtx, isSSE := s.server.processProxyResponse(reqCtx, resp, startTime, timeTaken, "[Proxy]", targetURL.String())
+
+	if isSSE {
+		if err := s.server.streamSSEOverTLS(s.tlsConn, respCtx, s.connectReq.Proto); err != nil {
+			s.server.notifyError(err, reqCtx)
+			return fmt.Errorf("stream SSE over TLS: %w", err)
+		}
+		return errSSEStreamHandled
+	}
+
+	if err := s.server.tunnelHTTPSResponse(s.tlsConn, respCtx.Response, reqCtx); err != nil {
+		return fmt.Errorf("tunnel HTTPS response: %w", err)
+	}
+
+	return nil
+}
+
+func sendConnectionEstablished(r *http.Request, rw *bufio.ReadWriter) error {
+	if rw == nil {
+		return fmt.Errorf("connection writer unavailable")
+	}
+	if _, err := rw.WriteString(r.Proto + " 200 Connection Established\r\n\r\n"); err != nil {
+		return fmt.Errorf("error writing 200 response: %w", err)
+	}
+	if err := rw.Flush(); err != nil {
+		return fmt.Errorf("error flushing response: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) startMITMTLS(conn net.Conn, hostname, clientAddr string) (*tls.Conn, string, error) {
+	tlsConfig, err := s.tlsConfigForHost(hostname)
+	if err != nil {
+		return nil, "", err
+	}
+
+	tlsConn := tls.Server(conn, tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		log.Printf("TLS handshake error with client %s for host %s: %v", clientAddr, hostname, err)
+		return nil, "", err
+	}
+
+	log.Printf("Successfully completed TLS handshake with client for %s", hostname)
+
+	state := tlsConn.ConnectionState()
+	return tlsConn, state.NegotiatedProtocol, nil
+}
+
+func (s *Server) tlsConfigForHost(hostname string) (*tls.Config, error) {
 	log.Printf("Generating certificate for hostname: %s", hostname)
-
 	serverCert, serverKey, err := s.CertManager.GenerateServerCert(hostname)
 	if err != nil {
 		log.Printf("Error generating server certificate for %s: %v", hostname, err)
-		return
+		return nil, err
 	}
 
-	// Start TLS with the client using the generated certificate
-	tlsConfig := &tls.Config{
+	return &tls.Config{
 		Certificates: []tls.Certificate{
 			{
 				Certificate: [][]byte{serverCert.Raw},
 				PrivateKey:  serverKey,
 			},
 		},
-		MinVersion: tls.VersionTLS12, // Minimum TLS version
-		MaxVersion: tls.VersionTLS13, // Maximum TLS version
-		// Use modern cipher suites
+		MinVersion: tls.VersionTLS12,
+		MaxVersion: tls.VersionTLS13,
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
@@ -85,91 +261,24 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
 			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 		},
-		// Enable HTTP/2 ALPN negotiation
 		NextProtos: []string{"h2", "http/1.1"},
-	}
-
-	tlsClientConn := tls.Server(clientConn, tlsConfig)
-	err = tlsClientConn.Handshake()
-	if err != nil {
-		log.Printf("TLS handshake error with client %s for host %s: %v", r.RemoteAddr, r.Host, err)
-		_ = clientConn.Close() // Ensure original connection is closed
-		return
-	}
-	defer tlsClientConn.Close()
-
-	log.Printf("Successfully completed TLS handshake with client for %s", r.Host)
-
-	// Check if the client negotiated HTTP/2
-	connState := tlsClientConn.ConnectionState()
-	protocol := connState.NegotiatedProtocol
-
-	if s.Verbose {
-		log.Printf("[MITM for %s] Negotiated protocol: %s", r.Host, protocol)
-	}
-
-	// Handle HTTP/2 connections differently
-	if protocol == "h2" {
-		s.handleHTTP2MITM(tlsClientConn, r)
-		return
-	}
-
-	// For HTTP/1.1, handle requests coming over this TLS connection (tlsClientConn)
-	clientReader := bufio.NewReader(tlsClientConn)
-	for {
-		// Read the request from the client over the TLS tunnel
-		tunneledReq, err := http.ReadRequest(clientReader)
-		if err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				log.Printf("[MITM for %s] Client closed connection or EOF: %v", r.Host, err)
-			} else if opError, ok := err.(*net.OpError); ok && opError.Err.Error() == "tls: use of closed connection" {
-				log.Printf("[MITM for %s] TLS connection closed by client: %v", r.Host, err)
-			} else {
-				log.Printf("[MITM for %s] Error reading request from client: %v", r.Host, err)
-			}
-			break // Exit loop on error or EOF
-		}
-
-		log.Printf("[MITM for %s] Received tunneled request: %s %s%s %s", r.Host, tunneledReq.Method, tunneledReq.Host, tunneledReq.URL.String(), tunneledReq.Proto)
-
-		// Prepare the outgoing request to the actual target server
-		targetHost := r.Host
-		targetURL := &url.URL{
-			Scheme:   "https",
-			Host:     targetHost,
-			Path:     tunneledReq.URL.Path,
-			RawQuery: tunneledReq.URL.RawQuery,
-		}
-
-		// 构建transport
-		targetHostname := targetHost
-		if h, _, err := net.SplitHostPort(targetHost); err == nil {
-			targetHostname = h
-		}
-		transport := &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-				ServerName:         targetHostname,
-			},
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			DisableCompression:    true,
-		}
-		// 用统一逻辑处理MITM代理
-		s.handleProxyRequest(nil, tunneledReq, targetURL.String(), transport, true, tlsClientConn)
-	}
-	if s.Verbose {
-		log.Printf("[MITM for %s] Exiting MITM processing loop.", r.Host)
-	}
+	}, nil
 }
 
-// tunnelHTTPSResponse 处理HTTPS隧道响应，返回到客户端
+func ensurePort(host string) string {
+	if strings.Contains(host, ":") {
+		return host
+	}
+	return host + ":443"
+}
+
+func extractHostname(host string) string {
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		return name
+	}
+	return host
+}
+
 func (s *Server) tunnelHTTPSResponse(clientConn *tls.Conn, resp *http.Response, reqCtx *RequestContext) error {
 	// 创建一个用于存储响应头的映射
 	respHeader := make(http.Header)
@@ -220,3 +329,101 @@ func (s *Server) tunnelHTTPSResponse(clientConn *tls.Conn, resp *http.Response, 
 
 	return nil
 }
+
+func (s *Server) streamSSEOverTLS(conn *tls.Conn, respCtx *ResponseContext, clientProto string) error {
+	if conn == nil || respCtx == nil || respCtx.Response == nil {
+		return fmt.Errorf("invalid SSE context")
+	}
+
+	if s.Verbose {
+		target := ""
+		if respCtx.Response.Request != nil && respCtx.Response.Request.URL != nil {
+			target = respCtx.Response.Request.URL.String()
+		}
+		log.Printf("[Proxy] Detected Server-Sent Events response from %s", target)
+	}
+
+	writer := newTLSResponseWriter(conn, clientProto)
+	if err := s.handleSSE(writer, respCtx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeGatewayError(conn net.Conn, proto string) {
+	if conn == nil {
+		return
+	}
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	_, _ = conn.Write([]byte(fmt.Sprintf("%s 502 Bad Gateway\r\n\r\n", proto)))
+}
+
+type tlsResponseWriter struct {
+	conn        *tls.Conn
+	buf         *bufio.Writer
+	header      http.Header
+	status      int
+	proto       string
+	wroteHeader bool
+}
+
+func newTLSResponseWriter(conn *tls.Conn, proto string) *tlsResponseWriter {
+	return &tlsResponseWriter{
+		conn:   conn,
+		buf:    bufio.NewWriter(conn),
+		header: make(http.Header),
+		proto:  proto,
+	}
+}
+
+func (w *tlsResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *tlsResponseWriter) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.buf.Write(data)
+	if err != nil {
+		return n, err
+	}
+	if err := w.buf.Flush(); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+func (w *tlsResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	if w.proto == "" {
+		w.proto = "HTTP/1.1"
+	}
+	statusText := http.StatusText(status)
+	if statusText == "" {
+		statusText = "Status"
+	}
+	_, _ = w.buf.WriteString(fmt.Sprintf("%s %d %s\r\n", w.proto, status, statusText))
+	for k, vv := range w.header {
+		for _, v := range vv {
+			_, _ = w.buf.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+		}
+	}
+	_, _ = w.buf.WriteString("\r\n")
+	_ = w.buf.Flush()
+	w.status = status
+	w.wroteHeader = true
+}
+
+func (w *tlsResponseWriter) Flush() {
+	_ = w.buf.Flush()
+}
+
+var _ interface {
+	http.ResponseWriter
+	http.Flusher
+} = (*tlsResponseWriter)(nil)

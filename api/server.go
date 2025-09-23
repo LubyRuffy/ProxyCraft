@@ -78,6 +78,8 @@ func NewServer(webHandler *handlers.WebHandler, port int) *Server {
 		log.Printf("Warning: Could not initialize WebSocket server: %v", err)
 	} else {
 		server.WebSocketServer = wsServer
+		// 设置WebSocket事件处理器
+		server.WebSocketServer.setupEventHandlers()
 	}
 
 	// 配置路由

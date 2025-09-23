@@ -10,14 +10,9 @@ import (
 	"math/big"
 	"net" // Added for IP address parsing
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
-)
-
-const (
-	caCertFile = "proxycraft-ca.pem"
-	caKeyFile  = "proxycraft-ca-key.pem"
-	rsaBits    = 2048
 )
 
 // Manager handles CA certificate creation and loading.
@@ -27,7 +22,7 @@ type Manager struct {
 }
 
 // NewManager creates a new certificate manager.
-// It will try to load existing CA cert/key, or generate new ones if not found.
+// It will try to load existing CA cert/key from ~/.proxycraft, or generate new ones if not found.
 func NewManager() (*Manager, error) {
 	m := &Manager{}
 	err := m.loadCA()
@@ -37,112 +32,64 @@ func NewManager() (*Manager, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate CA: %w", err)
 		}
-		fmt.Printf("New CA certificate saved to %s and key to %s\n", caCertFile, caKeyFile)
+		certPath := MustGetCACertPath()
+		keyPath := MustGetCAKeyPath()
+		fmt.Printf("New CA certificate saved to %s and key to %s\n", certPath, keyPath)
 	} else {
 		fmt.Println("Loaded existing CA certificate and key.")
 	}
 	return m, nil
 }
 
-// GetCACertPath returns the default CA certificate file path.
-func GetCACertPath() string {
-	return caCertFile
+// MustGetCACertPath returns the default CA certificate file path.
+func MustGetCACertPath() string {
+	return filepath.Join(mustGetCertDir(), caCertFile)
 }
 
-// GetCAKeyPath returns the default CA key file path.
-func GetCAKeyPath() string {
-	return caKeyFile
+// MustGetCAKeyPath returns the default CA key file path.
+func MustGetCAKeyPath() string {
+	return filepath.Join(mustGetCertDir(), caKeyFile)
 }
 
 func (m *Manager) generateCA() error {
-	privKey, err := rsa.GenerateKey(rand.Reader, rsaBits)
-	if err != nil {
-		return fmt.Errorf("failed to generate RSA private key: %w", err)
-	}
-	m.CAKey = privKey
-
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			Organization: []string{"ProxyCraft Generated CA"},
-			CommonName:   "ProxyCraft Root CA",
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(10, 0, 0), // Valid for 10 years
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privKey.PublicKey, privKey)
-	if err != nil {
-		return fmt.Errorf("failed to create certificate: %w", err)
-	}
-
-	cert, err := x509.ParseCertificate(derBytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse created certificate: %w", err)
-	}
-	m.CACert = cert
-
-	// Save CA certificate to file
-	certOut, err := os.Create(caCertFile)
-	if err != nil {
-		return fmt.Errorf("failed to open %s for writing: %w", caCertFile, err)
-	}
-	defer certOut.Close()
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return fmt.Errorf("failed to write CA certificate to %s: %w", caCertFile, err)
-	}
-
-	// Save CA private key to file
-	keyOut, err := os.OpenFile(caKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to open %s for writing: %w", caKeyFile, err)
-	}
-	defer keyOut.Close()
-	privBytes, err := x509.MarshalPKCS8PrivateKey(privKey)
-	if err != nil {
-		return fmt.Errorf("failed to marshal private key: %w", err)
-	}
-	if err := pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
-		return fmt.Errorf("failed to write CA key to %s: %w", caKeyFile, err)
-	}
+	generateToFile(MustGetCACertPath(), MustGetCAKeyPath(), IssuerName, OrgName, NotAfter)
 
 	return nil
 }
 
 func (m *Manager) loadCA() error {
-	certPEM, err := os.ReadFile(caCertFile)
+	certPath := MustGetCACertPath()
+	keyPath := MustGetCAKeyPath()
+
+	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
-		return fmt.Errorf("failed to read CA cert file %s: %w", caCertFile, err)
+		return fmt.Errorf("failed to read CA cert file %s: %w", certPath, err)
 	}
 	block, _ := pem.Decode(certPEM)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return fmt.Errorf("failed to decode PEM block containing certificate from %s", caCertFile)
+		return fmt.Errorf("failed to decode PEM block containing certificate from %s", certPath)
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return fmt.Errorf("failed to parse CA certificate from %s: %w", caCertFile, err)
+		return fmt.Errorf("failed to parse CA certificate from %s: %w", certPath, err)
 	}
 	m.CACert = cert
 
-	keyPEM, err := os.ReadFile(caKeyFile)
+	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
-		return fmt.Errorf("failed to read CA key file %s: %w", caKeyFile, err)
+		return fmt.Errorf("failed to read CA key file %s: %w", keyPath, err)
 	}
 	block, _ = pem.Decode(keyPEM)
 	if block == nil || block.Type != "PRIVATE KEY" {
-		return fmt.Errorf("failed to decode PEM block containing private key from %s", caKeyFile)
+		return fmt.Errorf("failed to decode PEM block containing private key from %s", keyPath)
 	}
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return fmt.Errorf("failed to parse CA private key from %s: %w", caKeyFile, err)
+		return fmt.Errorf("failed to parse CA private key from %s: %w", keyPath, err)
 	}
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return fmt.Errorf("CA key is not an RSA private key in %s", caKeyFile)
+		return fmt.Errorf("CA key is not an RSA private key in %s", keyPath)
 	}
 	m.CAKey = rsaKey
 
@@ -306,4 +253,9 @@ func (m *Manager) LoadCustomCA(certPath, keyPath string) error {
 
 	fmt.Printf("Loaded custom CA certificate from %s and key from %s\n", certPath, keyPath)
 	return nil
+}
+
+// InstallCerts installs the CA certificate to the system trust store.
+func (m *Manager) InstallCerts() error {
+	return Install()
 }

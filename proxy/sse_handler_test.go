@@ -332,10 +332,9 @@ func TestEarlyDetection(t *testing.T) {
 
 	// 创建EarlySSEDetector
 	detector := &earlySSEDetector{
-		base:           mockTransport,
-		responseWriter: &MyMockResponseWriterFlusher{},
-		server:         server,
-		verbose:        true,
+		base:    mockTransport,
+		server:  server,
+		verbose: true,
 	}
 
 	// 创建一个测试请求

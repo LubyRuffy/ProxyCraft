@@ -27,3 +27,11 @@ web/.vite/
 __debug_bin*
 api/.DS_Store
 web/package-lock.json
+certs/*.pem
+debug_websocket
+test_fix_complete
+.gitignore
+test_websocket_api
+test_v3
+.gitignore
+test_websocket_debug

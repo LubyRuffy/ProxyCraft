@@ -9,16 +9,18 @@ import (
 // Config holds all configurable options for ProxyCraft.
 // These will be populated from command-line arguments.
 type Config struct {
-	ListenHost       string
-	ListenPort       int
-	Verbose          bool
-	OutputFile       string
-	AutoSaveInterval int
-	Filter           string
-	ExportCAPath     string
-	UseCACertPath    string
-	UseCAKeyPath     string
-	ShowHelp         bool
+	ListenHost       string // Proxy server host
+	ListenPort       int    // Proxy server port
+	WebPort          int    // Web UI port
+	Verbose          bool   // More verbose
+	HarOutputFile    string // Save traffic to FILE (HAR format recommended)
+	AutoSaveInterval int    // Auto-save HAR file every N seconds (0 to disable)
+	Filter           string // Filter displayed traffic (e.g., "host=example.com")
+	ExportCAPath     string // Export the root CA certificate to FILEPATH and exit
+	UseCACertPath    string // Use custom root CA certificate from CERT_PATH
+	UseCAKeyPath     string // Use custom root CA private key from KEY_PATH
+	InstallCerts     bool   // Install CA certificate to system trust store
+	ShowHelp         bool   // Show this help message and exit
 	UpstreamProxy    string // Upstream proxy URL (e.g., "http://proxy.example.com:8080")
 	DumpTraffic      bool   // Enable dumping traffic content to console
 	Mode             string // 运行模式: "" (CLI模式) 或 "web" (Web界面模式)
@@ -30,17 +32,18 @@ func ParseFlags() *Config {
 
 	flag.StringVar(&cfg.ListenHost, "l", "127.0.0.1", "IP address to listen on")
 	flag.StringVar(&cfg.ListenHost, "listen-host", "127.0.0.1", "IP address to listen on")
-	flag.IntVar(&cfg.ListenPort, "p", 8080, "Port to listen on")
-	flag.IntVar(&cfg.ListenPort, "listen-port", 8080, "Port to listen on")
+	flag.IntVar(&cfg.ListenPort, "p", 38080, "Port to listen on")
+	flag.IntVar(&cfg.ListenPort, "listen-port", 38080, "Port to listen on")
 	flag.BoolVar(&cfg.Verbose, "v", false, "Enable verbose output")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose output")
-	flag.StringVar(&cfg.OutputFile, "o", "", "Save traffic to FILE (HAR format recommended)")
-	flag.StringVar(&cfg.OutputFile, "output-file", "", "Save traffic to FILE (HAR format recommended)")
+	flag.StringVar(&cfg.HarOutputFile, "o", "", "Save traffic to FILE (HAR format recommended)")
+	flag.StringVar(&cfg.HarOutputFile, "output-file", "", "Save traffic to FILE (HAR format recommended)")
 	flag.IntVar(&cfg.AutoSaveInterval, "auto-save", 10, "Auto-save HAR file every N seconds (0 to disable)")
 	flag.StringVar(&cfg.Filter, "filter", "", "Filter displayed traffic (e.g., \"host=example.com\")")
 	flag.StringVar(&cfg.ExportCAPath, "export-ca", "", "Export the root CA certificate to FILEPATH and exit")
 	flag.StringVar(&cfg.UseCACertPath, "use-ca", "", "Use custom root CA certificate from CERT_PATH")
 	flag.StringVar(&cfg.UseCAKeyPath, "use-key", "", "Use custom root CA private key from KEY_PATH")
+	flag.BoolVar(&cfg.InstallCerts, "install-ca", false, "Install the CA certificate to system trust store and exit")
 	flag.StringVar(&cfg.UpstreamProxy, "upstream-proxy", "", "Upstream proxy URL (e.g., \"http://proxy.example.com:8080\")")
 	flag.BoolVar(&cfg.DumpTraffic, "dump", false, "Dump traffic content to console with headers (binary content will not be displayed)")
 	flag.StringVar(&cfg.Mode, "mode", "", "Running mode: empty for CLI mode, 'web' for Web UI mode")

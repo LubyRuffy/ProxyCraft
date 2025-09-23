@@ -15,6 +15,7 @@ ProxyCraft 是一款轻量级、高性能的命令行代理工具，本身为 HT
 - **流量内容输出**: 支持直接在控制台输出请求和响应内容，便于实时分析
 - **命令行友好**: 所有功能通过命令行参数和输出进行交互，易于脚本化和集成到自动化流程中
 - **轻量高效**: 资源占用低，启动速度快，对系统性能影响小
+- **实时通信**: 采用 Socket.IO v4 实现前后端实时通信，支持 WebSocket 和 HTTP 轮询双通道
 
 ## 安装
 
@@ -93,6 +94,132 @@ curl --cacert proxycraft-ca.pem --proxy http://127.0.0.1:8080 https://example.co
 ```
 
 ## 功能详解
+
+### 实时通信 (Socket.IO)
+
+ProxyCraft 使用 Socket.IO v3 实现前后端实时通信：
+
+- **后端**: 采用 `github.com/zishang520/socket.io/servers/socket/v3` v3.0.0-rc.5 实现 WebSocket 服务器
+- **前端**: 使用 `socket.io-client` v4.8.1 实现 WebSocket 客户端
+- **协议支持**: 支持 WebSocket 和 HTTP 轮询双通道，确保在各种网络环境下都能正常工作
+- **自动重连**: 内置重连机制，网络恢复后自动重新连接
+- **事件驱动**: 基于事件的消息推送，实时更新流量数据
+
+**WebSocket 事件：**
+- `traffic_entries` - 获取所有流量条目列表
+- `traffic_new_entry` - 新的流量条目推送
+- `request_details` - 获取请求详情
+- `response_details` - 获取响应详情
+- `traffic_clear` - 清空所有流量条目
+
+**故障排除：**
+如果Web界面显示"处理中"或"加载中"无法加载请求/响应详情，请：
+
+1. **检查WebSocket连接状态**
+   ```bash
+   # 确保后端服务器运行在8081端口
+   curl http://localhost:8081/health
+   curl http://localhost:8081/socket.io/
+   ```
+
+2. **查看浏览器开发者工具**
+   - Network标签：查看WebSocket消息是否正确发送和接收
+   - Console标签：查看JavaScript错误信息
+
+3. **检查服务器日志**
+   ```bash
+   # 启动Web模式并查看日志（包含详细的事件处理日志）
+   ./ProxyCraft -mode web -v
+   ```
+
+4. **常见问题**
+   - 确保前端已正确构建：`./build_web.sh`
+   - 检查端口占用：`lsof -i :8081`
+   - 清除浏览器缓存和Cookie
+   - 尝试不同的浏览器测试
+
+5. **调试模式**
+   - 在浏览器中打开开发者工具
+   - 查看WebSocket消息的发送和接收
+   - 检查请求参数格式是否正确
+   - 查看服务器日志中的"接收到获取...请求"消息确认事件处理是否被调用
+
+## 🔧 已修复的问题
+
+### Socket.IO v3 事件处理架构修正
+
+**问题**：WebSocket事件处理函数没有被调用，点击请求详情时一直显示"加载中"
+
+**根本原因**：
+1. 事件监听器位置错误 - 业务事件应该在`client.On()`中监听，而不是`Server.On()`
+2. 缺少正确的事件处理器初始化
+3. 对Socket.IO v3的事件处理架构理解有误
+
+**修复内容**：
+1. ✅ **正确的事件处理架构**
+   ```
+   Socket.IO v3 正确的事件处理架构：
+
+   前端发送事件 → client.On("event") → 后端处理 → client.Emit("event") → 前端接收
+
+   具体流程：
+   1. 前端：socket.emit('traffic_entries')
+   2. 后端：client.On('traffic_entries', handler)
+   3. 后端处理完成后：client.Emit('traffic_entries', data)
+   4. 前端：socket.on('traffic_entries', handler)
+   ```
+
+2. ✅ **正确的事件处理器初始化**
+   ```go
+   // 在NewServer中正确设置事件处理器
+   wsServer, err := NewWebSocketServer(webHandler)
+   if err != nil {
+       log.Printf("Warning: Could not initialize WebSocket server: %v", err)
+   } else {
+       server.WebSocketServer = wsServer
+       // 设置WebSocket事件处理器
+       server.WebSocketServer.setupEventHandlers()
+   }
+   ```
+
+3. ✅ **完整的事件处理链**
+   ```go
+   ws.Server.On("connection", func(clients ...interface{}) {
+       client := clients[0].(*socket.Socket)
+
+       // 客户端特定事件（连接内）
+       client.On("disconnect", handler)
+       client.On("error", handler)
+
+       // 业务事件（连接内）
+       client.On(EventTrafficEntries, handler)
+       client.On(EventRequestDetails, handler)
+       client.On(EventResponseDetails, handler)
+       client.On(EventTrafficClear, handler)
+       client.On("ping", handler)
+       client.On("heartbeat", handler)
+   })
+   ```
+
+4. ✅ **Socket.IO v3 API结构**
+   ```
+   Server.On("connection") → 处理客户端连接
+   └── client.On("event_name") → 处理客户端发送的所有事件
+       ├── 业务事件: traffic_entries, request_details, etc.
+       ├── 系统事件: ping, heartbeat, etc.
+       └── 错误事件: error, disconnect, etc.
+   ```
+
+5. ✅ **详细的日志记录**
+   - 添加了事件接收的日志输出
+   - 添加了数据处理的详细日志
+   - 添加了错误处理的日志
+
+**验证方法**：
+- 在服务器日志中查看"接收到获取请求详情请求"消息
+- 在浏览器开发者工具中查看WebSocket消息的发送和接收
+- 确认不再显示"加载中"状态
+- 检查服务器日志中是否出现"WebSocket服务器已启动"消息
 
 ### HTTP/HTTPS 代理
 
@@ -204,6 +331,8 @@ ProxyCraft 支持通过上层代理转发请求，这在以下场景中非常有
 
 ProxyCraft现在支持Web界面模式，可以在浏览器中查看和分析HTTP/HTTPS流量。
 
+自 vNext 起，Web 控制台代码迁移至 React + Tailwind（目录 `web-react/`）。旧的 Vue 版本保留在 `web/` 目录中，作为回退参考，但官方构建和发布流程已经默认使用 React 版本。
+
 ### 启动Web模式
 
 要以Web模式启动ProxyCraft，请使用`-mode web`参数：
@@ -219,9 +348,9 @@ ProxyCraft现在支持Web界面模式，可以在浏览器中查看和分析HTTP
 Web界面提供以下功能：
 
 - 实时显示所有捕获的HTTP/HTTPS请求和响应
-- 请求列表支持按方法、主机、路径等字段排序和过滤
-- 详细查看请求和响应的头部和内容
-- 自动刷新功能，实时显示新捕获的流量
+- 请求列表支持按方法、主机、路径等字段排序和筛选（后续逐步增强）
+- 详细查看请求和响应的头部与正文，支持复制为 `curl`
+- Socket.IO v4 实时推送与 HTTP 回退双通道，SSE 流量自动补拉最新数据
 - 支持HTTPS流量的查看
 - 支持SSE (Server-Sent Events) 流量的特殊标记
 
@@ -229,5 +358,33 @@ Web界面提供以下功能：
 
 1. 点击请求列表中的任一请求，下方面板会显示该请求的详细信息
 2. 在详情面板中可以切换查看请求和响应的详情
-3. 点击"刷新"按钮手动刷新请求列表
-4. 点击"清空"按钮清除所有已捕获的流量记录
+3. 点击"刷新"按钮手动刷新请求列表，或等待实时推送
+4. 点击"清空"按钮清除所有已捕获的流量记录（需确认）
+5. 在详情面板中可拖拽调整请求/响应视图宽度，并复制请求为 `curl`
+
+### 开发/构建 React Web 控制台
+
+React 版前端位于 `web-react/` 目录。常用操作如下：
+
+```bash
+cd web-react
+# 推荐使用 cnpm（如果已安装），否则使用 npm
+cnpm install  # 或 npm install
+
+# 本地开发
+cnpm run dev  # 或 npm run dev
+
+# 生产构建（可通过环境变量指定 WebSocket 地址）
+VITE_PROXYCRAFT_SOCKET_URL=http://localhost:8081 cnpm run build
+```
+
+构建完成的前端产物会输出至 `api/dist/` 目录（由 Vite 配置和 `build_web.sh` 脚本负责），供服务端在 Web 模式下静态托管。
+
+顶层脚本 `./build_web.sh` 已改为默认使用 React 版本：
+
+```bash
+./build_web.sh                 # 默认假定 WebSocket 在 http://localhost:8081
+VITE_PROXYCRAFT_SOCKET_URL=https://proxycraft.example.com ./build_web.sh
+```
+
+如需回滚或参考旧版实现，可进入 `web/` 目录查看 Vue 代码。

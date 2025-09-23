@@ -8,7 +8,7 @@ NC='\033[0m' # No Color
 
 # 获取项目根目录的绝对路径
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEB_DIR="${PROJECT_ROOT}/web"
+WEB_DIR="${PROJECT_ROOT}/web-react"
 API_DIST_DIR="${PROJECT_ROOT}/api/dist"
 
 echo -e "${YELLOW}开始构建ProxyCraft Web界面${NC}"
@@ -20,10 +20,19 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
-# 检查是否安装了npm
-if ! command -v npm &> /dev/null; then
-    echo -e "${YELLOW}未检测到npm，请先安装npm${NC}"
+# 检查是否安装了 npm/cnpm
+if ! command -v npm &> /dev/null && ! command -v cnpm &> /dev/null; then
+    echo -e "${YELLOW}未检测到 npm 或 cnpm，请先安装 Node.js 包管理器${NC}"
     exit 1
+fi
+
+# 选择包管理器（优先 cnpm）
+if command -v cnpm &> /dev/null; then
+    PKG_MANAGER="cnpm"
+    echo -e "${YELLOW}检测到 cnpm，将使用 cnpm 安装依赖和构建${NC}"
+else
+    PKG_MANAGER="npm"
+    echo -e "${YELLOW}未检测到 cnpm，改用 npm${NC}"
 fi
 
 # 确保目录存在
@@ -37,11 +46,11 @@ cd "${WEB_DIR}" || {
 
 # 安装依赖
 echo -e "${YELLOW}安装前端依赖...${NC}"
-npm install
+${PKG_MANAGER} install
 
 # 构建前端项目
 echo -e "${YELLOW}构建前端项目...${NC}"
-npm run build
+VITE_PROXYCRAFT_SOCKET_URL="${VITE_PROXYCRAFT_SOCKET_URL:-http://localhost:8081}" ${PKG_MANAGER} run build
 
 # 严格检查构建结果
 BUILD_EXIT_CODE=$?

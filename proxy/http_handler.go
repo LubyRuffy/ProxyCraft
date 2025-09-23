@@ -1,14 +1,9 @@
 package proxy
 
 import (
-	"bufio"
-	"crypto/tls"
-	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // handleHTTP is the handler for all incoming HTTP requests
@@ -20,203 +15,55 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a new request to the target server
-	var targetURL string
-	if r.URL.IsAbs() {
-		targetURL = r.URL.String()
-	} else {
-		targetURL = "http://" + r.Host + r.URL.Path
-		if r.URL.RawQuery != "" {
-			targetURL += "?" + r.URL.RawQuery
-		}
-	}
+	targetURL := s.resolveTargetURL(r)
 
-	// 构建transport
-	baseTransport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		DisableCompression:    true,
-		ResponseHeaderTimeout: 5 * time.Second,
-	}
+	baseTransport := s.newTransport(r.Host, false)
+	transport := s.wrapTransportForSSE(baseTransport)
 
-	s.handleProxyRequest(w, r, targetURL, baseTransport, false, nil)
-}
-
-// handleProxyRequest 统一处理HTTP和HTTPS的代理转发逻辑
-func (s *Server) handleProxyRequest(
-	w http.ResponseWriter,
-	r *http.Request,
-	targetURL string,
-	baseTransport *http.Transport,
-	isHTTPS bool,
-	clientConn net.Conn, // 对于HTTPS 传递TLS连接，否则为nil
-) {
-	if s.UpstreamProxy != nil {
-		if s.Verbose {
-			log.Printf("[HTTP] Using upstream proxy: %s", s.UpstreamProxy.String())
-		}
-		baseTransport.Proxy = http.ProxyURL(s.UpstreamProxy)
-	}
-	s.handleHTTP2(baseTransport)
-	transport := &earlySSEDetector{
-		base:           baseTransport,
-		responseWriter: w,
-		server:         s,
-		verbose:        s.Verbose,
-	}
-
-	startTime := time.Now()
-	// 创建请求上下文
-	reqCtx := s.createRequestContext(r, targetURL, startTime, isHTTPS)
-	modifiedReq := s.notifyRequest(reqCtx)
-	if modifiedReq != r && modifiedReq != nil {
-		r = modifiedReq
-	}
-
-	proxyReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+	proxyReq, reqCtx, potentialSSE, startTime, err := s.prepareProxyRequest(r, targetURL, false)
 	if err != nil {
 		log.Printf("[Proxy] Error creating proxy request for %s: %v", targetURL, err)
-		if isHTTPS && clientConn != nil {
-			clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
-		} else {
-			http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
-		}
-		s.notifyError(err, reqCtx)
+		http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
 		return
 	}
-	for k, vv := range r.Header {
-		for _, v := range vv {
-			proxyReq.Header.Add(k, v)
-		}
-	}
-	proxyReq.Host = r.Host
 
-	potentialSSE := isSSERequest(proxyReq)
-	if s.Verbose && potentialSSE {
-		log.Printf("[Proxy] Potential SSE request detected based on URL path or Accept header")
-	}
+	logPotentialSSE(s.Verbose, "[Proxy]", potentialSSE)
 
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   30 * time.Second,
-	}
-	if potentialSSE {
-		client.Timeout = 0 // SSE无超时
-		proxyReq.Header.Set("Accept", "text/event-stream")
-		proxyReq.Header.Set("Cache-Control", "no-cache")
-		proxyReq.Header.Set("Connection", "keep-alive")
-	}
-
-	resp, err := client.Do(proxyReq)
-	timeTaken := time.Since(startTime)
+	resp, timeTaken, err := s.sendProxyRequest(proxyReq, transport, potentialSSE, startTime)
 	if err != nil {
 		log.Printf("[Proxy] Error sending request to target server %s: %v", targetURL, err)
-		if isHTTPS && clientConn != nil {
-			clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
-		} else {
-			http.Error(w, "Error proxying to "+targetURL+": "+err.Error(), http.StatusBadGateway)
-		}
-		s.logToHAR(r, nil, startTime, timeTaken, false)
-		s.notifyError(err, reqCtx)
+		s.recordProxyError(err, reqCtx, startTime, timeTaken)
+		http.Error(w, "Error proxying to "+targetURL+": "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
-	if resp.Request == nil {
-		resp.Request = proxyReq
-	}
 
-	s.processCompressedResponse(resp, reqCtx, s.Verbose)
-	respCtx := s.createResponseContext(reqCtx, resp, timeTaken)
-	modifiedResp := s.notifyResponse(respCtx)
-	if modifiedResp != resp && modifiedResp != nil {
-		resp = modifiedResp
-		respCtx.Response = resp
-	}
-	if !isServerSentEvent(resp) {
-		s.logToHAR(r, resp, startTime, timeTaken, false)
-	}
-	if s.DumpTraffic {
-		s.dumpRequestBody(r)
-		if !isServerSentEvent(resp) {
-			s.dumpResponseBody(resp)
-		}
-	}
-	if s.Verbose {
-		log.Printf("[Proxy] Received response from %s: %d %s", targetURL, resp.StatusCode, resp.Status)
-	} else {
-		log.Printf("[Proxy] %s %s%s -> %d %s", r.Method, r.Host, r.URL.RequestURI(), resp.StatusCode, resp.Header.Get("Content-Type"))
-	}
-	if isServerSentEvent(resp) {
-		if s.Verbose {
-			log.Printf("[Proxy] Detected Server-Sent Events response from %s", targetURL)
-		}
-		if isHTTPS && clientConn != nil {
-			// HTTPS: 需要手动写入TLS连接
-			writer := bufio.NewWriter(clientConn)
-			statusLine := fmt.Sprintf("HTTP/%d.%d %d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, resp.Status)
-			writer.WriteString(statusLine)
-			for k, vv := range resp.Header {
-				for _, v := range vv {
-					writer.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-				}
-			}
-			writer.WriteString("\r\n")
-			writer.Flush()
-			reader := bufio.NewReader(resp.Body)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					break
-				}
-				_, err = writer.Write(line)
-				if err != nil {
-					break
-				}
-				writer.Flush()
-			}
-			return
-		} else {
-			// HTTP明文: 直接用handleSSE
-			err := s.handleSSE(w, respCtx)
-			if err != nil {
-				log.Printf("[SSE] Error handling SSE response: %v", err)
-				s.notifyError(err, reqCtx)
-			}
-			return
-		}
-	}
-	// 非SSE响应
-	if isHTTPS && clientConn != nil {
-		err := s.tunnelHTTPSResponse(clientConn.(*tls.Conn), resp, reqCtx)
-		if err != nil {
-			log.Printf("[Proxy] Error tunneling response to client: %v", err)
+	respCtx, isSSE := s.processProxyResponse(reqCtx, resp, startTime, timeTaken, "[Proxy]", targetURL)
+
+	if isSSE {
+		if err := s.handleSSE(w, respCtx); err != nil {
+			log.Printf("[SSE] Error handling SSE response: %v", err)
+			s.notifyError(err, reqCtx)
 		}
 		return
 	}
-	// HTTP明文: 直接写入w
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
 
-	// 添加协议版本头以便前端识别
-	w.Header().Add("X-Protocol", r.Proto)
-
-	w.WriteHeader(resp.StatusCode)
-
-	// 使用通用的流式传输函数处理响应
-	contentType := resp.Header.Get("Content-Type")
-	_, err = s.streamResponse(resp.Body, w, contentType, s.Verbose)
-	if err != nil {
+	if err := s.writeHTTPResponse(w, respCtx, r.Proto); err != nil {
 		log.Printf("[Proxy] Error streaming response: %v", err)
 	}
+}
+
+// resolveTargetURL builds the absolute target URL for the incoming request.
+func (s *Server) resolveTargetURL(r *http.Request) string {
+	if r.URL.IsAbs() {
+		return r.URL.String()
+	}
+
+	targetURL := "http://" + r.Host + r.URL.Path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+	return targetURL
 }
 
 // isTextContentType 判断Content-Type是否为文本类型

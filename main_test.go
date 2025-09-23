@@ -86,7 +86,7 @@ func TestMainFunctionality(t *testing.T) {
 		cfg := cli.ParseFlags()
 
 		// 验证HAR日志选项被正确设置
-		assert.Equal(t, "test.har", cfg.OutputFile)
+		assert.Equal(t, "test.har", cfg.HarOutputFile)
 		assert.Equal(t, 60, cfg.AutoSaveInterval)
 	})
 }

@@ -44,6 +44,15 @@ func main() {
 		return
 	}
 
+	if cfg.InstallCerts {
+		err = certManager.InstallCerts()
+		if err != nil {
+			log.Fatalf("Error installing CA certificate: %v", err)
+		}
+		fmt.Println("CA certificate installed successfully. Exiting.")
+		return
+	}
+
 	// Use custom CA certificate and key if provided
 	if cfg.UseCACertPath != "" && cfg.UseCAKeyPath != "" {
 		err = certManager.LoadCustomCA(cfg.UseCACertPath, cfg.UseCAKeyPath)
@@ -60,9 +69,9 @@ func main() {
 	}
 
 	// Initialize HAR Logger
-	harLogger := harlogger.NewLogger(cfg.OutputFile, appName, appVersion)
+	harLogger := harlogger.NewLogger(cfg.HarOutputFile, appName, appVersion)
 	if harLogger.IsEnabled() {
-		log.Printf("HAR logging enabled, will save to: %s", cfg.OutputFile)
+		log.Printf("HAR logging enabled, will save to: %s", cfg.HarOutputFile)
 
 		// Enable auto-save if interval > 0
 		if cfg.AutoSaveInterval > 0 {
@@ -160,8 +169,9 @@ func main() {
 	log.Printf("MITM mode enabled - HTTPS traffic will be decrypted and inspected")
 	log.Printf("Make sure to add the CA certificate to your browser/system trust store")
 	log.Printf("You can export the CA certificate using the -export-ca flag")
-	log.Printf("CA certificate is located at: %s", certs.GetCACertPath())
-	log.Printf("For curl, you can use: curl --cacert %s --proxy http://%s https://example.com", certs.GetCACertPath(), listenAddr)
+	caCertPath := certs.MustGetCACertPath()
+	log.Printf("CA certificate is located at: %s", caCertPath)
+	log.Printf("For curl, you can use: curl --cacert %s --proxy http://%s https://example.com", caCertPath, listenAddr)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

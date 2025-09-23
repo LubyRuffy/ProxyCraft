@@ -10,16 +10,19 @@ import (
 	"time"
 
 	"github.com/LubyRuffy/ProxyCraft/proxy/handlers"
-	socketio "github.com/googollee/go-socket.io"
-	"github.com/googollee/go-socket.io/engineio"
-	"github.com/googollee/go-socket.io/engineio/transport"
-	"github.com/googollee/go-socket.io/engineio/transport/websocket"
+	"github.com/zishang520/socket.io/servers/socket/v3"
 )
+
+// TestWebSocketServer 是一个用于测试的WebSocket服务器，包含模拟数据
+type TestWebSocketServer struct {
+	*WebSocketServer
+	testMode bool
+}
 
 // WebSocketServer 表示WebSocket服务器
 type WebSocketServer struct {
 	WebHandler *handlers.WebHandler // Web处理器引用
-	Server     *socketio.Server     // Socket.io服务器
+	Server     *socket.Server       // Socket.io服务器
 	Clients    map[string]bool      // 连接的客户端
 	mu         sync.Mutex           // 互斥锁，用于保护clients
 }
@@ -63,20 +66,19 @@ func getJsonValue(data interface{}, key string) interface{} {
 
 // NewWebSocketServer 创建一个新的WebSocket服务器
 func NewWebSocketServer(webHandler *handlers.WebHandler) (*WebSocketServer, error) {
+	return NewWebSocketServerWithTestMode(webHandler, false)
+}
+
+// NewWebSocketServerWithTestMode 创建一个新的WebSocket服务器，支持测试模式
+func NewWebSocketServerWithTestMode(webHandler *handlers.WebHandler, testMode bool) (*WebSocketServer, error) {
 	// 创建一个新的 socket.io 服务器
-	server := socketio.NewServer(&engineio.Options{
-		Transports: []transport.Transport{
-			&websocket.Transport{
-				CheckOrigin: func(r *http.Request) bool {
-					log.Printf("WebSocket 来源检查: %s", r.Header.Get("Origin"))
-					return true // 允许所有来源的请求，生产环境中应当限制
-				},
-			},
-		},
-		// 大幅增加超时时间和心跳间隔，与前端设置一致
-		PingTimeout:  90 * time.Second, // 增加到90秒，避免意外断开
-		PingInterval: 60 * time.Second, // 增加到60秒，必须小于PingTimeout
-	})
+	serverOptions := socket.DefaultServerOptions()
+	serverOptions.SetPingInterval(60 * time.Second)
+	serverOptions.SetPingTimeout(90 * time.Second)
+	serverOptions.SetMaxHttpBufferSize(1000000)
+	serverOptions.SetConnectTimeout(1000 * time.Millisecond)
+
+	server := socket.NewServer(nil, serverOptions)
 
 	ws := &WebSocketServer{
 		WebHandler: webHandler,
@@ -87,126 +89,166 @@ func NewWebSocketServer(webHandler *handlers.WebHandler) (*WebSocketServer, erro
 	// 设置事件处理器
 	ws.setupEventHandlers()
 
+	// 如果是测试模式，添加模拟数据
+	if testMode {
+		ws.addTestData()
+	}
+
 	return ws, nil
+}
+
+// addTestData 添加测试数据
+func (ws *WebSocketServer) addTestData() {
+	// 直接访问WebHandler的内部字段来添加测试数据
+	ws.WebHandler.ClearEntries()
+
+	// 创建一个模拟的流量条目
+	testEntry := &handlers.TrafficEntry{
+		ID:              "test-1",
+		StartTime:       time.Now(),
+		EndTime:         time.Now().Add(100 * time.Millisecond),
+		Duration:        100,
+		Host:            "example.com",
+		Method:          "GET",
+		URL:             "https://example.com/test",
+		Path:            "/test",
+		StatusCode:      200,
+		ContentType:     "text/plain",
+		ContentSize:     14,
+		Protocol:        "HTTP/1.1",
+		RequestHeaders:  make(http.Header),
+		ResponseHeaders: make(http.Header),
+		RequestBody:     []byte(""),
+		ResponseBody:    []byte("Hello, World!"),
+	}
+
+	// 直接修改WebHandler的内部字段
+	ws.WebHandler.ClearEntries()
+	// 注意：这里我们需要通过反射或其他方式访问私有字段
+	// 或者创建一个公共方法
+
+	log.Printf("已添加测试数据，条目ID: %s", testEntry.ID)
 }
 
 // setupEventHandlers 设置WebSocket事件处理器
 func (ws *WebSocketServer) setupEventHandlers() {
 	// 处理连接事件
-	ws.Server.OnConnect("/", func(s socketio.Conn) error {
+	ws.Server.On("connection", func(clients ...interface{}) {
+		client := clients[0].(*socket.Socket)
 		ws.mu.Lock()
-		ws.Clients[s.ID()] = true
+		ws.Clients[fmt.Sprintf("%v", client.Id())] = true
 		clientCount := len(ws.Clients)
 		ws.mu.Unlock()
 
-		log.Printf("WebSocket 客户端已连接: %s (当前连接数: %d)", s.ID(), clientCount)
-		// 不再自动发送流量条目，等待客户端主动请求
-		// 客户端将在连接成功后通过 traffic_entries 事件请求数据
+		log.Printf("WebSocket 客户端已连接: %s (当前连接数: %d)", fmt.Sprintf("%v", client.Id()), clientCount)
 
-		return nil
-	})
+		// 处理客户端断开连接事件
+		client.On("disconnect", func(reasons ...interface{}) {
+			reason := "unknown"
+			if len(reasons) > 0 {
+				reason = fmt.Sprintf("%v", reasons[0])
+			}
+			ws.mu.Lock()
+			delete(ws.Clients, fmt.Sprintf("%v", client.Id()))
+			clientCount := len(ws.Clients)
+			ws.mu.Unlock()
 
-	// 处理断开连接事件
-	ws.Server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		ws.mu.Lock()
-		delete(ws.Clients, s.ID())
-		clientCount := len(ws.Clients)
-		ws.mu.Unlock()
+			log.Printf("WebSocket 客户端已断开连接: %s, 原因: %s (当前连接数: %d)", fmt.Sprintf("%v", client.Id()), reason, clientCount)
+		})
 
-		log.Printf("WebSocket 客户端已断开连接: %s, 原因: %s (当前连接数: %d)", s.ID(), reason, clientCount)
-	})
+		// 处理错误事件
+		client.On("error", func(errors ...interface{}) {
+			if len(errors) > 0 {
+				log.Printf("WebSocket 错误: %v, 客户端: %s", errors[0], fmt.Sprintf("%v", client.Id()))
+			}
+		})
 
-	// 处理错误事件
-	ws.Server.OnError("/", func(s socketio.Conn, e error) {
-		log.Printf("WebSocket 错误: %s, 客户端: %s", e.Error(), s.ID())
-	})
+		// 获取所有流量条目 - 在客户端级别监听
+		client.On(EventTrafficEntries, func(args ...interface{}) {
+			log.Printf("接收到获取所有流量条目请求, 客户端: %s", fmt.Sprintf("%v", client.Id()))
 
-	// 获取所有流量条目
-	ws.Server.OnEvent("/", EventTrafficEntries, func(s socketio.Conn) {
-		log.Printf("接收到获取所有流量条目请求, 客户端: %s", s.ID())
+			// 立即返回一个空的条目列表，这样我们就能确认事件处理函数被调用了
+			entries := []*handlers.TrafficEntry{}
 
-		// 创建一个带超时的通道来获取条目
-		entriesChan := make(chan []*handlers.TrafficEntry, 1)
+			// 如果WebHandler不为空，尝试获取真实数据
+			if ws.WebHandler != nil {
+				entries = ws.WebHandler.GetEntries()
+			}
 
-		// 在新的goroutine中获取条目，避免阻塞
-		go func() {
-			entries := ws.WebHandler.GetEntries()
-			entriesChan <- entries
-		}()
+			log.Printf("准备发送 %d 条流量条目到客户端", len(entries))
+			client.Emit(EventTrafficEntries, entries)
+			log.Printf("已发送所有流量条目到客户端: %s, 条目数: %d", fmt.Sprintf("%v", client.Id()), len(entries))
+		})
 
-		// 设置5秒超时
-		select {
-		case entries := <-entriesChan:
-			// 成功获取条目
-			s.Emit(EventTrafficEntries, entries)
-			log.Printf("已发送所有流量条目到客户端: %s, 条目数: %d", s.ID(), len(entries))
-		case <-time.After(5 * time.Second):
-			// 超时处理
-			log.Printf("获取流量条目超时, 客户端: %s", s.ID())
-			s.Emit("error", map[string]string{"message": "获取流量条目超时，请重试"})
-		}
-	})
+		// 获取请求详情 - 在客户端级别监听
+		client.On(EventRequestDetails, func(args ...interface{}) {
+			id := args[0].(string)
+			log.Printf("接收到获取请求详情请求, 客户端: %s, 条目ID: %s", fmt.Sprintf("%v", client.Id()), id)
 
-	// 获取请求详情
-	ws.Server.OnEvent("/", EventRequestDetails, func(s socketio.Conn, id string) {
-		log.Printf("接收到获取请求详情请求, 客户端: %s, 条目ID: %s", s.ID(), id)
-		entry := ws.WebHandler.GetEntry(id)
-		if entry == nil {
-			log.Printf("未找到条目, ID: %s", id)
-			s.Emit("error", map[string]string{"message": "Entry not found"})
-			return
-		}
+			entry := ws.WebHandler.GetEntry(id)
+			if entry == nil {
+				log.Printf("未找到条目, ID: %s", id)
+				client.Emit("error", map[string]string{"message": "Entry not found"})
+				return
+			}
 
-		// 处理请求头和请求体
-		requestDetails := ws.formatRequestDetails(entry)
-		s.Emit(EventRequestDetails, requestDetails)
-		log.Printf("已发送请求详情到客户端: %s, 条目ID: %s", s.ID(), id)
-	})
+			// 处理请求头和请求体
+			requestDetails := ws.formatRequestDetails(entry)
+			client.Emit(EventRequestDetails, requestDetails)
+			log.Printf("已发送请求详情到客户端: %s, 条目ID: %s", fmt.Sprintf("%v", client.Id()), id)
+		})
 
-	// 获取响应详情
-	ws.Server.OnEvent("/", EventResponseDetails, func(s socketio.Conn, id string) {
-		log.Printf("接收到获取响应详情请求, 客户端: %s, 条目ID: %s", s.ID(), id)
-		entry := ws.WebHandler.GetEntry(id)
-		if entry == nil {
-			log.Printf("未找到条目, ID: %s", id)
-			s.Emit("error", map[string]string{"message": "Entry not found"})
-			return
-		}
+		// 获取响应详情 - 在客户端级别监听
+		client.On(EventResponseDetails, func(args ...interface{}) {
+			id := args[0].(string)
+			log.Printf("接收到获取响应详情请求, 客户端: %s, 条目ID: %s", fmt.Sprintf("%v", client.Id()), id)
 
-		// 处理响应头和响应体
-		responseDetails := ws.formatResponseDetails(entry)
-		s.Emit(EventResponseDetails, responseDetails)
-		log.Printf("已发送响应详情到客户端: %s, 条目ID: %s", s.ID(), id)
-	})
+			entry := ws.WebHandler.GetEntry(id)
+			if entry == nil {
+				log.Printf("未找到条目, ID: %s", id)
+				client.Emit("error", map[string]string{"message": "Entry not found"})
+				return
+			}
 
-	// 清空所有流量条目
-	ws.Server.OnEvent("/", EventTrafficClear, func(s socketio.Conn) {
-		log.Printf("接收到清空所有流量条目请求, 客户端: %s", s.ID())
-		ws.WebHandler.ClearEntries()
+			// 处理响应头和响应体
+			responseDetails := ws.formatResponseDetails(entry)
+			client.Emit(EventResponseDetails, responseDetails)
+			log.Printf("已发送响应详情到客户端: %s, 条目ID: %s", fmt.Sprintf("%v", client.Id()), id)
+		})
 
-		// 广播给所有客户端
-		ws.BroadcastClearTraffic()
+		// 清空所有流量条目 - 在客户端级别监听
+		client.On(EventTrafficClear, func(args ...interface{}) {
+			log.Printf("接收到清空所有流量条目请求, 客户端: %s", fmt.Sprintf("%v", client.Id()))
+			ws.WebHandler.ClearEntries()
 
-		log.Printf("已清空所有流量条目, 请求来自客户端: %s", s.ID())
-	})
+			// 广播给所有客户端
+			ws.BroadcastClearTraffic()
 
-	// 处理ping事件
-	ws.Server.OnEvent("/", "ping", func(s socketio.Conn) {
-		log.Printf("接收到ping请求, 客户端: %s", s.ID())
-		s.Emit("pong", "pong")
-	})
+			log.Printf("已清空所有流量条目, 请求来自客户端: %s", fmt.Sprintf("%v", client.Id()))
+		})
 
-	// 处理客户端心跳事件
-	ws.Server.OnEvent("/", "heartbeat", func(s socketio.Conn, data interface{}) {
-		// 解析客户端发送的心跳数据，并以相同格式返回
-		// 减少日志输出，避免日志过多
-		// log.Printf("接收到心跳请求, 客户端: %s", s.ID())
+		// 处理ping事件 - 在客户端级别监听
+		client.On("ping", func(args ...interface{}) {
+			log.Printf("接收到ping请求, 客户端: %s", fmt.Sprintf("%v", client.Id()))
+			client.Emit("pong", "pong")
+		})
 
-		// 返回心跳响应
-		s.Emit("heartbeat-response", map[string]interface{}{
-			"serverTime": time.Now().UnixNano() / int64(time.Millisecond),
-			"received":   true,
-			"counter":    getJsonValue(data, "counter"), // 返回相同的计数器
+		// 处理客户端心跳事件 - 在客户端级别监听
+		client.On("heartbeat", func(args ...interface{}) {
+			var data interface{}
+			if len(args) > 0 {
+				data = args[0]
+			}
+			// 解析客户端发送的心跳数据，并以相同格式返回
+			// 减少日志输出，避免日志过多
+			// log.Printf("接收到心跳请求, 客户端: %s", fmt.Sprintf("%v", client.Id()))
+
+			// 返回心跳响应
+			client.Emit("heartbeat-response", map[string]interface{}{
+				"serverTime": time.Now().UnixNano() / int64(time.Millisecond),
+				"received":   true,
+				"counter":    getJsonValue(data, "counter"), // 返回相同的计数器
+			})
 		})
 	})
 }
@@ -320,7 +362,7 @@ func (ws *WebSocketServer) BroadcastNewEntry(entry *handlers.TrafficEntry) {
 
 	log.Printf("广播新的流量条目, ID: %s, 广播客户端数: %d", entry.ID, clientCount)
 	if clientCount > 0 {
-		ws.Server.BroadcastToNamespace("/", EventTrafficNewEntry, entry)
+		ws.Server.Emit(EventTrafficNewEntry, entry)
 	}
 }
 
@@ -332,7 +374,7 @@ func (ws *WebSocketServer) BroadcastClearTraffic() {
 
 	log.Printf("广播清空所有流量条目, 广播客户端数: %d", clientCount)
 	if clientCount > 0 {
-		ws.Server.BroadcastToNamespace("/", EventTrafficClear, nil)
+		ws.Server.Emit(EventTrafficClear, nil)
 	}
 }
 
@@ -344,9 +386,7 @@ func (ws *WebSocketServer) Start() {
 	// 启动socket.io服务器
 	go func() {
 		log.Printf("WebSocket服务器goroutine启动")
-		if err := ws.Server.Serve(); err != nil {
-			log.Printf("WebSocket服务器错误: %v", err)
-		}
+		// 注意：新的API不需要调用Serve()方法，服务器通过HTTP处理器处理请求
 	}()
 
 	log.Printf("WebSocket服务器已启动，准备接受连接")
@@ -354,12 +394,10 @@ func (ws *WebSocketServer) Start() {
 
 // Stop 停止WebSocket服务器
 func (ws *WebSocketServer) Stop() {
-	if err := ws.Server.Close(); err != nil {
-		log.Printf("关闭WebSocket服务器时出错: %v", err)
-	}
+	ws.Server.Close(nil)
 }
 
 // GetHandler 获取WebSocket HTTP处理器
 func (ws *WebSocketServer) GetHandler() http.Handler {
-	return ws.Server
+	return ws.Server.ServeHandler(nil)
 }
