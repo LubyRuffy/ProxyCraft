@@ -45,7 +45,11 @@ func main() {
 	}
 
 	if cfg.InstallCerts {
-		err = certManager.InstallCerts()
+		if cfg.ForceReinstallCA {
+			err = certManager.InstallCertsForce()
+		} else {
+			err = certManager.InstallCerts()
+		}
 		if err != nil {
 			log.Fatalf("Error installing CA certificate: %v", err)
 		}
@@ -60,6 +64,34 @@ func main() {
 			log.Fatalf("Error loading custom CA certificate and key: %v", err)
 		}
 		log.Printf("Successfully loaded custom CA certificate and key")
+	} else {
+		if cfg.ForceReinstallCA {
+			log.Printf("Force reinstalling CA certificate in system trust store...")
+			err = certManager.InstallCertsForce()
+			if err != nil {
+				log.Printf("Warning: Failed to force reinstall CA certificate: %v", err)
+				log.Printf("Please manually install the CA certificate using the -install-ca flag")
+				log.Printf("Or export the certificate with -export-ca and install it manually")
+			} else {
+				log.Printf("CA certificate installed successfully")
+			}
+		} else {
+			// Automatically check if CA certificate is installed and install if needed
+			log.Printf("Checking if CA certificate is installed in system trust store...")
+			if !certs.IsInstalled() {
+				log.Printf("CA certificate not installed. Attempting to install...")
+				err = certManager.InstallCerts()
+				if err != nil {
+					log.Printf("Warning: Failed to automatically install CA certificate: %v", err)
+					log.Printf("Please manually install the CA certificate using the -install-ca flag")
+					log.Printf("Or export the certificate with -export-ca and install it manually")
+				} else {
+					log.Printf("CA certificate installed successfully")
+				}
+			} else {
+				log.Printf("CA certificate matches system trust store. Skipping installation.")
+			}
+		}
 	}
 
 	listenAddr := fmt.Sprintf("%s:%d", cfg.ListenHost, cfg.ListenPort)

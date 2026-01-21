@@ -116,6 +116,34 @@ func IsInstalled() bool {
 	return installed
 }
 
+// InstallForce installs the CA certificate even if it's already installed.
+func InstallForce() error {
+	// Generate certificate files if needed
+	certDir := mustGetCertDir()
+	certPath := filepath.Join(certDir, caCertFile)
+	keyPath := filepath.Join(certDir, caKeyFile)
+	needToGenerate := false
+	if _, err := os.Stat(certPath); os.IsNotExist(err) {
+		needToGenerate = true
+	} else if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		needToGenerate = true
+	}
+	if needToGenerate {
+		err := generateToFile(certPath, keyPath, IssuerName, OrgName, NotAfter)
+		if err != nil {
+			return fmt.Errorf("failed to generate CA: %w", err)
+		}
+	}
+
+	// Install certificate
+	if err := installForce(); err != nil {
+		return fmt.Errorf("failed to force install certificate: %w", err)
+	}
+
+	fmt.Println("Certificate installed successfully.")
+	return nil
+}
+
 // Install installs the CA certificate to the system keychain.
 func Install() error {
 	// 先检查证书是否已经安装

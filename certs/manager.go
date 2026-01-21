@@ -259,3 +259,8 @@ func (m *Manager) LoadCustomCA(certPath, keyPath string) error {
 func (m *Manager) InstallCerts() error {
 	return Install()
 }
+
+// InstallCertsForce installs the CA certificate even if it's already installed.
+func (m *Manager) InstallCertsForce() error {
+	return InstallForce()
+}

@@ -36,6 +36,10 @@ func install() error {
 	return nil
 }
 
+func installForce() error {
+	return install()
+}
+
 func uninstall() error {
 	output, err := runCertutil("-delstore", "root", IssuerName)
 	if err != nil {

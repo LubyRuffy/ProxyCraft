@@ -66,6 +66,10 @@ func install() error {
 	return errors.Join(errs...)
 }
 
+func installForce() error {
+	return install()
+}
+
 func uninstall() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("removing the root CA requires root privileges; please rerun with sudo")

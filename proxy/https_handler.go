@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/LubyRuffy/ProxyCraft/certs"
 )
 
 var (
@@ -227,6 +229,10 @@ func (s *Server) startMITMTLS(conn net.Conn, hostname, clientAddr string) (*tls.
 	tlsConn := tls.Server(conn, tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
 		log.Printf("TLS handshake error with client %s for host %s: %v", clientAddr, hostname, err)
+		if strings.Contains(err.Error(), "bad certificate") {
+			log.Printf("TLS MITM hint: ensure the ProxyCraft Root CA in system trust store matches %s", certs.MustGetCACertPath())
+			log.Printf("TLS MITM hint: restart the client after updating trust; some apps (e.g. Firefox) use their own trust store")
+		}
 		return nil, "", err
 	}
 

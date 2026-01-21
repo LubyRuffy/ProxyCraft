@@ -3,11 +3,15 @@
 package certs
 
 import (
-	"fmt"
-	"log"
-	"os/exec"
-	"strconv"
-	"strings"
+    "bytes"
+    "crypto/x509"
+    "encoding/pem"
+    "fmt"
+    "log"
+    "os"
+    "os/exec"
+    "strconv"
+    "strings"
 )
 
 // runWithAdmin 使用 AppleScript 的 "do shell script ... with administrator privileges"
@@ -34,31 +38,71 @@ func runWithAdmin(args ...string) (string, error) {
 	return string(stdout), nil
 }
 
-// isInstalled checks if the CA certificate is already installed in the system trust store.
-func isInstalled() (bool, error) {
-	// Use security command to find the certificate in the system keychain
-	// We search by the certificate's common name. Reading from system keychain doesn't require sudo.
-	cmdOutput, err := runWithAdmin("security", "find-certificate", "-c", fmt.Sprintf(`"%s"`, IssuerName), "/Library/Keychains/System.keychain")
+func runWithAdminShell(shellCmd string) (string, error) {
+	quotedCmd := strconv.Quote(shellCmd)
+	as := fmt.Sprintf("do shell script %s with administrator privileges", quotedCmd)
+	cmd := exec.Command("osascript", "-e", as)
+	stdout, err := cmd.CombinedOutput()
 	if err != nil {
-		return false, err
+		return string(stdout), fmt.Errorf("osascript exit: %v; stderr: %s", err, string(stdout))
 	}
-	// log.Println(cmd.Args)
+	return string(stdout), nil
+}
 
-	if strings.Contains(cmdOutput, "The specified item could not be found in the keychain.") {
-		return false, nil
+const systemKeychain = "/Library/Keychains/System.keychain"
+
+// isInstalled checks if the exact CA certificate from ~/.proxycraft is already installed and trusted in the system trust store.
+func isInstalled() (bool, error) {
+	// Get the current CA certificate from ~/.proxycraft
+	certPath := MustGetCACertPath()
+	currentCertPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to read current CA certificate: %w", err)
+	}
+	currentBlock, _ := pem.Decode(currentCertPEM)
+	if currentBlock == nil || currentBlock.Type != "CERTIFICATE" {
+		return false, fmt.Errorf("failed to decode PEM block containing certificate from %s", certPath)
+	}
+	currentCert, err := x509.ParseCertificate(currentBlock.Bytes)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse current CA certificate: %w", err)
 	}
 
-	if strings.Contains(cmdOutput, "version:") && strings.Contains(cmdOutput, "keychain:") {
-		return true, nil
+	// Get all certificates from the system keychain with our issuer name
+	cmd := exec.Command("security", "find-certificate", "-c", IssuerName, "-p", systemKeychain)
+	installedCertsPEM, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, nil // No certificate found with that name
 	}
 
-	return true, nil
+	remaining := installedCertsPEM
+	for len(remaining) > 0 {
+		var block *pem.Block
+		block, remaining = pem.Decode(remaining)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		if bytes.Equal(cert.Raw, currentCert.Raw) {
+			return true, nil
+		}
+	}
+
+	// No matching certificate found or it's not trusted
+	return false, nil
 }
 
 // InstallCerts installs the CA certificate to the system trust store on macOS.
-// It requires sudo privileges. If the certificate is already installed, it will skip the installation.
+// It requires sudo privileges. If a certificate with the same name but different content exists,
+// it will be removed first to prevent conflicts.
 func install() error {
-	// Check if the certificate is already installed
+	// Check if the exact certificate is already installed
 	installed, err := isInstalled()
 	if err != nil {
 		return fmt.Errorf("failed to check if certificate is installed: %w", err)
@@ -69,16 +113,31 @@ func install() error {
 		return nil
 	}
 
+	return installForce()
+}
+
+func installForce() error {
 	certPath := MustGetCACertPath()
 
-	// On macOS, we need to use the `security` command to install the cert.
-	// This requires sudo.
+	// On macOS, we need to use the `security` command to manage certificates.
+	// First, remove any existing certificate with the same name to prevent conflicts
 	fmt.Println("Attempting to install CA certificate into system keychain...")
 	fmt.Println("You might be prompted for your password.")
 
-	cmdOutput, err := runWithAdmin("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", certPath)
+	// Remove any existing certificate with our issuer name
+	// This is safe because we already checked that the exact certificate isn't installed
+	deleteCmd := fmt.Sprintf("security delete-certificate -c %s %s >/dev/null 2>&1 || true", strconv.Quote(IssuerName), strconv.Quote(systemKeychain))
+	installCmd := fmt.Sprintf("security add-trusted-cert -d -r trustRoot -k %s %s", strconv.Quote(systemKeychain), strconv.Quote(certPath))
+	cmdOutput, err := runWithAdminShell(deleteCmd + "; " + installCmd)
 	if err != nil {
-		return fmt.Errorf("failed to install certificate. command finished with error: %w. Make sure you have sudo privileges", err)
+		log.Printf("Automatic install via osascript failed: %v", err)
+		sudoCmd := exec.Command("sudo", "/bin/sh", "-c", deleteCmd+"; "+installCmd)
+		sudoOutput, sudoErr := sudoCmd.CombinedOutput()
+		if sudoErr != nil {
+			return fmt.Errorf("failed to install certificate via osascript and sudo: %w; output: %s", sudoErr, string(sudoOutput))
+		}
+		log.Println(string(sudoOutput))
+		return nil
 	}
 
 	log.Println(cmdOutput)
@@ -89,7 +148,7 @@ func install() error {
 // uninstall uninstalls the CA certificate from the system trust store on macOS.
 // It requires sudo privileges.
 func uninstall() error {
-	cmdOutput, err := runWithAdmin("security", "delete-certificate", "-c", IssuerName, "/Library/Keychains/System.keychain")
+	cmdOutput, err := runWithAdmin("security", "delete-certificate", "-c", IssuerName, systemKeychain)
 	if err != nil {
 		return fmt.Errorf("failed to uninstall certificate. command finished with error: %w", err)
 	}
