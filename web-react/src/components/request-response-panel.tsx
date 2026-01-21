@@ -1,19 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { json } from '@codemirror/lang-json';
-import { html } from '@codemirror/lang-html';
-import { javascript } from '@codemirror/lang-javascript';
-import { xml } from '@codemirror/lang-xml';
-import { yaml } from '@codemirror/lang-yaml';
-import { defaultHighlightStyle, foldGutter, foldKeymap, syntaxHighlighting } from '@codemirror/language';
-import { EditorState } from '@codemirror/state';
-import { EditorView, keymap, lineNumbers } from '@codemirror/view';
-import CodeMirror from '@uiw/react-codemirror';
-
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { HttpBodyPanel, type BodyConfig, type BodyFormat } from '@/components/http-body-panel';
 import { cn } from '@/lib/utils';
 import { HttpMessage, TrafficDetail, TrafficEntry } from '@/types/traffic';
 
@@ -57,20 +48,6 @@ const buildResponseLine = (entry?: TrafficEntry | null) => {
   return `HTTP/1.1 ${entry.statusCode || 0}`;
 };
 
-const MAX_HIGHLIGHT_LENGTH = 200000;
-
-type BodyFormat = 'json' | 'html' | 'xml' | 'yaml' | 'javascript' | 'text' | 'sse';
-
-const baseExtensions = [
-  lineNumbers(),
-  foldGutter(),
-  keymap.of(foldKeymap),
-  EditorView.lineWrapping,
-  EditorView.editable.of(false),
-  EditorState.readOnly.of(true),
-  syntaxHighlighting(defaultHighlightStyle),
-];
-
 const getBodyString = (body?: unknown) => {
   if (body === undefined || body === null || body === '') return '';
   if (typeof body === 'string') return body;
@@ -107,24 +84,7 @@ const detectBodyFormat = (body?: unknown, message?: HttpMessage): BodyFormat => 
   if (text.startsWith('{') || text.startsWith('[')) return 'json';
   return 'text';
 };
-const getLanguageExtension = (format: BodyFormat) => {
-  switch (format) {
-    case 'json':
-      return json();
-    case 'html':
-      return html();
-    case 'xml':
-      return xml();
-    case 'yaml':
-      return yaml();
-    case 'javascript':
-      return javascript();
-    default:
-      return null;
-  }
-};
-
-const buildEditorConfig = (body?: unknown, message?: HttpMessage) => {
+const buildEditorConfig = (body?: unknown, message?: HttpMessage): BodyConfig => {
   const rawBody = getBodyString(body);
   if (!rawBody) return { value: '', format: 'text' as BodyFormat };
 
@@ -231,7 +191,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
   const content = useMemo(() => {
       if (!entry || (!hasRequest && !hasResponse)) {
         return (
-          <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-border/60 p-6 text-sm text-muted-foreground">
+          <div className="flex h-full items-center justify-center rounded-none border border-dashed border-border/60 p-6 text-sm text-muted-foreground">
             请选择列表中的一条流量记录以查看详情。
           </div>
         );
@@ -263,93 +223,13 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
     );
 
     const renderPlaceholder = (label: string) => (
-      <div className="flex h-full min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/30 p-3 font-mono text-[11px] text-muted-foreground">
+      <div className="flex h-full min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/30 p-3 font-mono text-xs text-muted-foreground">
         {label} 视图暂未实现
       </div>
     );
 
     const requestBodyConfig = buildEditorConfig(detail?.request?.body, detail?.request);
     const responseBodyConfig = buildEditorConfig(detail?.response?.body, detail?.response);
-
-    const renderBodyBlock = (config: { value: string; format: BodyFormat }) => {
-      if (!config.value) {
-        return (
-          <div className="mt-1 rounded-md border border-border/60 bg-muted/30 p-2 text-[11px] text-muted-foreground">
-            无正文
-          </div>
-        );
-      }
-
-      if (config.value.length > MAX_HIGHLIGHT_LENGTH) {
-        return (
-          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground">
-            {config.value}
-          </pre>
-        );
-      }
-
-      if (config.format === 'sse') {
-        const lines = config.value.split(/\r?\n/);
-        const sseKeys = new Set(['event', 'data', 'id', 'retry']);
-
-        return (
-          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground">
-            {lines.map((line, index) => {
-              const lineKey = `${index}-${line}`;
-              if (!line) {
-                return <span key={lineKey}>{'\n'}</span>;
-              }
-
-              if (line.startsWith(':')) {
-                return (
-                  <span key={lineKey} className="text-muted-foreground">
-                    {line}
-                    {'\n'}
-                  </span>
-                );
-              }
-
-              const match = line.match(/^([^:]+):(.*)$/);
-              if (!match) {
-                return (
-                  <span key={lineKey} className="text-foreground">
-                    {line}
-                    {'\n'}
-                  </span>
-                );
-              }
-
-              const key = match[1].trim();
-              const value = match[2].replace(/^\s?/, '');
-
-              return (
-                <span key={lineKey}>
-                  <span className={sseKeys.has(key) ? 'text-primary' : 'text-foreground'}>{key}:</span>
-                  {value ? <span className="ml-1 text-foreground">{value}</span> : null}
-                  {'\n'}
-                </span>
-              );
-            })}
-          </pre>
-        );
-      }
-
-      const language = getLanguageExtension(config.format);
-      const extensions = language ? [...baseExtensions, language] : baseExtensions;
-
-      return (
-        <div className="mt-1 max-h-48 overflow-hidden rounded-md border border-border/60 bg-muted/40">
-          <CodeMirror
-            value={config.value}
-            extensions={extensions}
-            editable={false}
-            basicSetup={false}
-            height="100%"
-            maxHeight="12rem"
-          />
-        </div>
-      );
-    };
 
     const renderRequestPretty = () => (
       <div className="space-y-2">
@@ -369,10 +249,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
             )}
           </div>
         </div>
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">请求体</p>
-          {renderBodyBlock(requestBodyConfig)}
-        </div>
+        <HttpBodyPanel title="请求体" config={requestBodyConfig} />
       </div>
     );
 
@@ -394,10 +271,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
             )}
           </div>
         </div>
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">响应体</p>
-          {renderBodyBlock(responseBodyConfig)}
-        </div>
+        <HttpBodyPanel title="响应体" config={responseBodyConfig} />
       </div>
     );
 
@@ -452,7 +326,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col overflow-x-hidden">
-      <div className="flex min-w-0 flex-nowrap items-center justify-between gap-3 border-b border-border/60 px-3 py-1.5 text-xs">
+      <div className="flex shrink-0 min-w-0 flex-nowrap items-center justify-between gap-3 border-b border-border/60 px-3 py-1.5 text-xs">
         <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-3">
           <div className="min-w-0">
             <p className="uppercase racking-[0.25em] text-muted-foreground">Inspector</p>
@@ -496,10 +370,10 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
         </div>
       </div>
 
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-h-0 min-w-0">
         <div
           className={cn(
-            'relative flex h-full min-w-0 overflow-hidden rounded-xl',
+            'relative flex h-full min-h-0 min-w-0 overflow-hidden rounded-none',
             loading && 'opacity-70'
           )}
         >

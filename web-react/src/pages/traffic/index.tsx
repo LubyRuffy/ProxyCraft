@@ -78,7 +78,7 @@ export function TrafficPage() {
             <ResizablePanel
               defaultSize={62}
               minSize={35}
-              className="flex h-full min-w-0 flex-col rounded-xl border border-border/60 bg-card/70"
+              className="flex h-full min-w-0 flex-col rounded-none border border-border/60 bg-card/70"
             >
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-1.5 text-xs">
                 <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
@@ -130,7 +130,7 @@ export function TrafficPage() {
             <ResizablePanel
               defaultSize={38}
               minSize={25}
-              className="flex h-full min-w-0 flex-col rounded-xl border border-border/60 bg-card/70"
+              className="flex h-full min-w-0 flex-col rounded-none border border-border/60 bg-card/70"
             >
               <div className="flex-1 min-w-0 overflow-x-hidden">
                 <RequestResponsePanel entry={selectedEntry ?? undefined} detail={detail} loading={loading} />
