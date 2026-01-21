@@ -99,7 +99,7 @@ export function SettingsPage() {
           <BreadcrumbList>
             <BreadcrumbItem>
               <BreadcrumbLink asChild>
-                <Link to="/traffic">流量</Link>
+                <Link to="/traffic">HOME</Link>
               </BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />

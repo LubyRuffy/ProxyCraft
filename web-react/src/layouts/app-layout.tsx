@@ -49,7 +49,7 @@ export function AppLayout() {
   };
 
   return (
-        <SidebarProvider defaultOpen className="w-full min-w-0 overflow-x-hidden">
+        <SidebarProvider defaultOpen={false} className="w-full min-w-0 overflow-x-hidden">
         <Sidebar className="border-sidebar-border/60 bg-sidebar/95">
           <SidebarContent className="px-3 py-3 text-sm group-data-[state=collapsed]:px-2">
             <SidebarGroup>
