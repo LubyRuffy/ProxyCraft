@@ -68,7 +68,7 @@ export function TrafficPage() {
         </div>
       ) : null}
 
-      <section className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-3 overflow-x-hidden px-4 py-3">
+      <section className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-3 overflow-x-hidden">
         {/* 主内容区域 - 表格 */}
         <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-x-hidden">
           <ResizablePanelGroup
@@ -126,7 +126,7 @@ export function TrafficPage() {
                 />
               </div>
             </ResizablePanel>
-            <ResizableHandle withHandle className="bg-border/60" />
+            <ResizableHandle className="bg-border/60" />
             <ResizablePanel
               defaultSize={38}
               minSize={25}

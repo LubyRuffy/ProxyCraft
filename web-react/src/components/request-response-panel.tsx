@@ -250,15 +250,11 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
         onValueChange={(val) => {
           if (val) onChange(val as ViewTab);
         }}
-        size="sm"
-        variant="outline"
-        className="gap-1"
       >
         {VIEW_TABS.map((tab) => (
           <ToggleGroupItem
             key={tab.key}
             value={tab.key}
-            className="h-6 min-w-0 px-2 text-[11px]"
           >
             {tab.label}
           </ToggleGroupItem>
@@ -407,7 +403,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
 
     const requestSection = (
       <section className="flex h-full min-h-0 flex-col rounded-lg border border-border/60 bg-card/80">
-        <header className="flex items-center justify-between gap-2 border-b border-border/60 bg-background/40 px-2 py-1 text-[11px]">
+        <header className="flex items-center justify-between gap-2 bg-background/40 px-2 py-1 text-[11px]">
           <span className="font-semibold text-muted-foreground">请求</span>
           {renderTabRow(requestTab, setRequestTab)}
         </header>
@@ -433,12 +429,12 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
       return (
         <ResizablePanelGroup
           orientation="horizontal"
-          className="min-h-[320px] w-full min-w-0 gap-2 overflow-hidden overflow-x-hidden"
+          className="min-h-[320px] w-full min-w-0 overflow-hidden overflow-x-hidden"
         >
           <ResizablePanel defaultSize={50} minSize={20} className="min-h-0 min-w-0">
             {requestSection}
           </ResizablePanel>
-          <ResizableHandle withHandle className="bg-border/70" />
+          <ResizableHandle className="bg-border/70" />
           <ResizablePanel defaultSize={50} minSize={20} className="min-h-0 min-w-0">
             {responseSection}
           </ResizablePanel>
@@ -500,10 +496,10 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
         </div>
       </div>
 
-      <div className="flex-1 min-w-0 p-2">
+      <div className="flex-1 min-w-0">
         <div
           className={cn(
-            'relative flex h-full min-w-0 overflow-hidden rounded-xl border border-border/60 bg-card/70 p-2',
+            'relative flex h-full min-w-0 overflow-hidden rounded-xl',
             loading && 'opacity-70'
           )}
         >
