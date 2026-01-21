@@ -6,6 +6,7 @@
 - Avoid hardcoded color utility classes (e.g. `text-red-500`, `bg-amber-400`). Use theme token classes only (e.g. `text-primary`, `bg-accent`).
 - Keep Tailwind v4 usage consistent with `@import "tailwindcss";` in `web-react/src/index.css`.
 - Do not commit generated `.js` files under `web-react/src/`. Only `.ts/.tsx` source files should live there. If such files appear, delete them and ensure TypeScript is not emitting into `src/`.
+- Add shadcn components via `npx shadcn@latest add [component]` instead of hand-writing them.
 
 ## Scope Safety
 - Operate only within this repository.

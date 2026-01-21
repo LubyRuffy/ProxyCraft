@@ -13,6 +13,7 @@ import CodeMirror from '@uiw/react-codemirror';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { cn } from '@/lib/utils';
 import { HttpMessage, TrafficDetail, TrafficEntry } from '@/types/traffic';
 
@@ -243,23 +244,26 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
     const responseHeaders = formatHeaderEntries(detail?.response);
 
     const renderTabRow = (activeTab: ViewTab, onChange: (tab: ViewTab) => void) => (
-      <div className="flex items-center gap-1 rounded-md border border-border/60 bg-background/70 p-0.5">
+      <ToggleGroup
+        type="single"
+        value={activeTab}
+        onValueChange={(val) => {
+          if (val) onChange(val as ViewTab);
+        }}
+        size="sm"
+        variant="outline"
+        className="gap-1"
+      >
         {VIEW_TABS.map((tab) => (
-          <button
+          <ToggleGroupItem
             key={tab.key}
-            type="button"
-            onClick={() => onChange(tab.key)}
-            className={cn(
-              'h-5 rounded-sm px-2 text-[11px] font-medium transition',
-              activeTab === tab.key
-                ? 'bg-muted text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
+            value={tab.key}
+            className="h-6 min-w-0 px-2 text-[11px]"
           >
             {tab.label}
-          </button>
+          </ToggleGroupItem>
         ))}
-      </div>
+      </ToggleGroup>
     );
 
     const renderPlaceholder = (label: string) => (
@@ -455,8 +459,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
       <div className="flex min-w-0 flex-nowrap items-center justify-between gap-3 border-b border-border/60 px-3 py-1.5 text-xs">
         <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-3">
           <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-[0.25em] text-muted-foreground">Inspector</p>
-            <h2 className="truncate text-sm font-semibold text-foreground">请求 / 响应详情</h2>
+            <p className="uppercase racking-[0.25em] text-muted-foreground">Inspector</p>
           </div>
           {entryId ? (
             <div className="flex shrink-0 items-center gap-1.5 text-xs">
@@ -466,19 +469,27 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
           ) : null}
         </div>
         <div className="flex shrink-0 flex-nowrap items-center gap-2">
-          <div className="inline-flex shrink-0 items-center rounded-full border border-border/60 bg-background/70 p-0.5">
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            value={mode}
+            onValueChange={(next) => {
+              if (next) {
+                setMode(next as DisplayMode);
+              }
+            }}
+          >
             {DISPLAY_OPTIONS.map((option) => (
-              <Button
+              <ToggleGroupItem
                 key={option.key}
-                size="sm"
-                variant={mode === option.key ? 'secondary' : 'ghost'}
-                className={cn('h-6 rounded-full px-2.5 text-xs')}
-                onClick={() => setMode(option.key)}
+                value={option.key}
+                aria-label={option.label}
               >
                 {option.label}
-              </Button>
+              </ToggleGroupItem>
             ))}
-          </div>
+          </ToggleGroup>
           <div className="flex shrink-0 items-center gap-1.5">
             {copyState === 'success' ? <Badge variant="success">已复制</Badge> : null}
             {copyState === 'error' ? <Badge variant="destructive">复制失败</Badge> : null}

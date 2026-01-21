@@ -96,10 +96,6 @@ export function AppLayout() {
                 <span className="text-muted-foreground">{socketLabel}</span>
               </div>
               <div className="flex items-center gap-2.5">
-                <div className="flex items-center gap-1.5 text-muted-foreground">
-                  <span>Transport</span>
-                  <Badge variant="secondary">{transportLabel}</Badge>
-                </div>
                 <Button variant="outline" size="sm" onClick={handleSettingsClick} className="h-6 px-2.5 text-xs">
                   <Settings className="mr-2 h-4 w-4" />
                   设置
