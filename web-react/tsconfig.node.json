@@ -1,8 +1,10 @@
 {
   "compilerOptions": {
     "composite": true,
+    "emitDeclarationOnly": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "outDir": "dist-node",
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
     "strict": true

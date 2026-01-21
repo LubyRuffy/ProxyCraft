@@ -342,14 +342,10 @@ func (s *Server) getRequestDetails(c *gin.Context) {
 		if err := json.Unmarshal(entry.RequestBody, &body); err != nil {
 			body = string(entry.RequestBody)
 		}
-	} else if strings.Contains(contentType, "text/") ||
-		strings.Contains(contentType, "application/xml") ||
-		strings.Contains(contentType, "application/javascript") {
-		// 文本内容
-		body = string(entry.RequestBody)
-	} else {
-		// 二进制内容
+	} else if isBinaryContent(entry.RequestBody, contentType) {
 		body = fmt.Sprintf("<Binary data, %d bytes>", len(entry.RequestBody))
+	} else {
+		body = string(entry.RequestBody)
 	}
 
 	log.Printf("已获取请求详情，ID: %s，内容大小: %d bytes", id, len(entry.RequestBody))
@@ -413,14 +409,10 @@ func (s *Server) getResponseDetails(c *gin.Context) {
 		if err := json.Unmarshal(entry.ResponseBody, &body); err != nil {
 			body = string(entry.ResponseBody)
 		}
-	} else if strings.Contains(contentType, "text/") ||
-		strings.Contains(contentType, "application/xml") ||
-		strings.Contains(contentType, "application/javascript") {
-		// 文本内容
-		body = string(entry.ResponseBody)
-	} else {
-		// 二进制内容
+	} else if isBinaryContent(entry.ResponseBody, contentType) {
 		body = fmt.Sprintf("<Binary data, %d bytes>", len(entry.ResponseBody))
+	} else {
+		body = string(entry.ResponseBody)
 	}
 
 	log.Printf("已获取响应详情，ID: %s，内容大小: %d bytes", id, len(entry.ResponseBody))

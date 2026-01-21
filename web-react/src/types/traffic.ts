@@ -4,6 +4,8 @@ export type TrafficEntry = {
   endTime?: string;
   duration: number;
   host: string;
+  processName?: string;
+  processIcon?: string;
   method: string;
   url: string;
   path: string;

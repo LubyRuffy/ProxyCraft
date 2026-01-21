@@ -1,4 +1,12 @@
 import { Button } from '@/components/ui/button';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -7,6 +15,7 @@ import { Separator } from '@/components/ui/separator';
 import { useSettingsStore } from '@/stores/use-traffic-store';
 import { Settings, RefreshCw, Save, RotateCcw } from 'lucide-react';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 
 export function SettingsPage() {
@@ -85,21 +94,36 @@ export function SettingsPage() {
   return (
     <div className="flex h-full flex-col gap-4 p-4">
       {/* 头部区域 */}
-      <div className="flex items-center justify-between border-b pb-3">
-        <div className="flex items-center gap-3">
-          <Settings className="h-6 w-6" />
-          <h1 className="text-2xl font-bold">设置</h1>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handleReset} disabled={!hasChanges}>
-            <RotateCcw className="h-4 w-4 mr-2" />
-            重置
-          </Button>
-          <Button onClick={handleSave} disabled={!hasChanges || isSaving}>
-            <Save className="h-4 w-4 mr-2" />
-            {isSaving ? '保存中...' : '保存设置'}
-          </Button>
-        </div>
+      <div className="flex flex-col gap-3">
+        <Breadcrumb>
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <BreadcrumbLink asChild>
+                <Link to="/traffic">流量</Link>
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
+              <BreadcrumbPage>设置</BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+        <header className="flex items-center justify-between border-b pb-3">
+          <div className="flex items-center gap-3">
+            <Settings className="h-6 w-6" />
+            <h1 className="text-2xl font-bold">设置</h1>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleReset} disabled={!hasChanges}>
+              <RotateCcw className="h-4 w-4 mr-2" />
+              重置
+            </Button>
+            <Button onClick={handleSave} disabled={!hasChanges || isSaving}>
+              <Save className="h-4 w-4 mr-2" />
+              {isSaving ? '保存中...' : '保存设置'}
+            </Button>
+          </div>
+        </header>
       </div>
 
       {/* 主内容区域 */}

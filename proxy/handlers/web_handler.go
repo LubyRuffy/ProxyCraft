@@ -2,15 +2,25 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/LubyRuffy/ProxyCraft/proxy"
+	gopsnet "github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 // TrafficEntry 表示一条流量记录
@@ -32,6 +42,8 @@ type TrafficEntry struct {
 	IsSSE           bool        `json:"isSSE"`            // 是否为SSE请求
 	IsSSECompleted  bool        `json:"isSSECompleted"`   // SSE请求是否已完成
 	IsHTTPS         bool        `json:"isHTTPS"`          // 是否为HTTPS请求
+	ProcessName     string      `json:"processName"`      // 请求进程名称
+	ProcessIcon     string      `json:"processIcon"`      // 请求进程图标
 	RequestBody     []byte      `json:"-"`                // 请求体
 	ResponseBody    []byte      `json:"-"`                // 响应体
 	RequestHeaders  http.Header `json:"-"`                // 请求头
@@ -142,6 +154,246 @@ func (h *WebHandler) generateID() string {
 	return id
 }
 
+func resolveProcessInfo(remoteAddr string) (string, string) {
+	_, portStr, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return "", ""
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port == 0 {
+		return "", ""
+	}
+
+	connections, err := gopsnet.Connections("inet")
+	if err != nil {
+		return "", ""
+	}
+
+	for _, conn := range connections {
+		if conn.Laddr.Port != uint32(port) {
+			continue
+		}
+		if conn.Pid == 0 {
+			continue
+		}
+		proc, err := process.NewProcess(conn.Pid)
+		if err != nil {
+			continue
+		}
+		name, err := proc.Name()
+		if err != nil {
+			continue
+		}
+		exe, _ := proc.Exe()
+		icon := resolveProcessIcon(exe)
+		return name, icon
+	}
+
+	return "", ""
+}
+
+func resolveProcessIcon(exePath string) string {
+	if exePath == "" {
+		return ""
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return resolveDarwinIcon(exePath)
+	case "windows":
+		return resolveWindowsIcon(exePath)
+	case "linux":
+		return resolveLinuxIcon(exePath)
+	default:
+		return ""
+	}
+}
+
+func resolveDarwinIcon(exePath string) string {
+	idx := strings.Index(exePath, ".app/")
+	if idx == -1 {
+		return ""
+	}
+	appPath := exePath[:idx+4]
+	infoPath := filepath.Join(appPath, "Contents", "Info.plist")
+	if _, err := os.Stat(infoPath); err != nil {
+		return ""
+	}
+
+	cmd := exec.Command("/usr/bin/plutil", "-extract", "CFBundleIconFile", "raw", "-o", "-", infoPath)
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	iconName := strings.TrimSpace(string(output))
+	if iconName == "" {
+		return ""
+	}
+	if filepath.Ext(iconName) == "" {
+		iconName += ".icns"
+	}
+	iconPath := filepath.Join(appPath, "Contents", "Resources", iconName)
+	if _, err := os.Stat(iconPath); err != nil {
+		return ""
+	}
+
+	file, err := os.CreateTemp("", "proxycraft-icon-*.png")
+	if err != nil {
+		return ""
+	}
+	defer os.Remove(file.Name())
+	_ = file.Close()
+
+	convert := exec.Command("/usr/bin/sips", "-s", "format", "png", "-Z", "32", iconPath, "--out", file.Name())
+	if err := convert.Run(); err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(file.Name())
+	if err != nil {
+		return ""
+	}
+
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+func resolveWindowsIcon(exePath string) string {
+	escaped := strings.ReplaceAll(exePath, "'", "''")
+	script := strings.Join([]string{
+		"$path='" + escaped + "'",
+		"Add-Type -AssemblyName System.Drawing | Out-Null",
+		"$icon=[System.Drawing.Icon]::ExtractAssociatedIcon($path)",
+		"if ($icon -eq $null) { exit 1 }",
+		"$bmp=$icon.ToBitmap()",
+		"$ms=New-Object System.IO.MemoryStream",
+		"$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)",
+		"[Convert]::ToBase64String($ms.ToArray())",
+	}, ";")
+
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	encoded := strings.TrimSpace(string(output))
+	if encoded == "" {
+		return ""
+	}
+	return "data:image/png;base64," + encoded
+}
+
+func resolveLinuxIcon(exePath string) string {
+	exeBase := filepath.Base(exePath)
+	iconName := findDesktopIconName(exeBase)
+	if iconName == "" {
+		return ""
+	}
+	iconPath := findIconFile(iconName)
+	if iconPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(iconPath)
+	if err != nil {
+		return ""
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	mime := "image/png"
+	if strings.HasSuffix(iconPath, ".svg") {
+		mime = "image/svg+xml"
+	}
+	return "data:" + mime + ";base64," + encoded
+}
+
+func findDesktopIconName(exeBase string) string {
+	paths := []string{
+		"/usr/share/applications",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".local", "share", "applications"))
+	}
+
+	for _, dir := range paths {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".desktop") {
+				continue
+			}
+			content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			execLine, iconLine := "", ""
+			for _, line := range strings.Split(string(content), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "Exec=") {
+					execLine = strings.TrimPrefix(line, "Exec=")
+				}
+				if strings.HasPrefix(line, "Icon=") {
+					iconLine = strings.TrimPrefix(line, "Icon=")
+				}
+			}
+			if execLine == "" || iconLine == "" {
+				continue
+			}
+			if strings.Contains(execLine, exeBase) {
+				return strings.TrimSpace(iconLine)
+			}
+		}
+	}
+
+	return ""
+}
+
+func findIconFile(iconName string) string {
+	if filepath.IsAbs(iconName) {
+		if _, err := os.Stat(iconName); err == nil {
+			return iconName
+		}
+	}
+
+	searchPaths := []string{
+		"/usr/share/icons/hicolor",
+		"/usr/share/pixmaps",
+	}
+
+	for _, base := range searchPaths {
+		if base == "/usr/share/pixmaps" {
+			for _, ext := range []string{".png", ".svg"} {
+				candidate := filepath.Join(base, iconName+ext)
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate
+				}
+			}
+			continue
+		}
+
+		var found string
+		errStop := errors.New("icon-found")
+		walkErr := filepath.WalkDir(base, func(path string, info os.DirEntry, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			if !strings.Contains(path, string(filepath.Separator)+"apps"+string(filepath.Separator)) {
+				return nil
+			}
+			if strings.HasSuffix(path, iconName+".png") || strings.HasSuffix(path, iconName+".svg") {
+				found = path
+				return errStop
+			}
+			return nil
+		})
+		if walkErr != nil && !errors.Is(walkErr, errStop) {
+			continue
+		}
+		if found != "" {
+			return found
+		}
+	}
+
+	return ""
+}
+
 // GetEntries 返回所有流量条目
 func (h *WebHandler) GetEntries() []*TrafficEntry {
 	startTime := time.Now()
@@ -189,6 +441,8 @@ func (h *WebHandler) GetEntries() []*TrafficEntry {
 			IsSSE:          srcEntry.IsSSE,
 			IsSSECompleted: srcEntry.IsSSECompleted,
 			IsHTTPS:        srcEntry.IsHTTPS,
+			ProcessName:    srcEntry.ProcessName,
+			ProcessIcon:    srcEntry.ProcessIcon,
 			Error:          srcEntry.Error,
 		}
 	}
@@ -249,6 +503,8 @@ func (h *WebHandler) OnRequest(ctx *proxy.RequestContext) *http.Request {
 		IsSSECompleted: false, // 初始化为false，当SSE流结束时会设置为true
 		RequestHeaders: ctx.Request.Header.Clone(),
 	}
+
+	entry.ProcessName, entry.ProcessIcon = resolveProcessInfo(ctx.Request.RemoteAddr)
 
 	// 保存请求体
 	if body, err := ctx.GetRequestBody(); err == nil {

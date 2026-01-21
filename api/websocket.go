@@ -295,14 +295,10 @@ func (ws *WebSocketServer) formatRequestDetails(entry *handlers.TrafficEntry) ma
 		if err := json.Unmarshal(entry.RequestBody, &body); err != nil {
 			body = string(entry.RequestBody)
 		}
-	} else if strings.Contains(contentType, "text/") ||
-		strings.Contains(contentType, "application/xml") ||
-		strings.Contains(contentType, "application/javascript") {
-		// 文本内容
-		body = string(entry.RequestBody)
-	} else {
-		// 二进制内容
+	} else if isBinaryContent(entry.RequestBody, contentType) {
 		body = fmt.Sprintf("<Binary data, %d bytes>", len(entry.RequestBody))
+	} else {
+		body = string(entry.RequestBody)
 	}
 
 	return map[string]interface{}{
@@ -338,14 +334,10 @@ func (ws *WebSocketServer) formatResponseDetails(entry *handlers.TrafficEntry) m
 		if err := json.Unmarshal(entry.ResponseBody, &body); err != nil {
 			body = string(entry.ResponseBody)
 		}
-	} else if strings.Contains(contentType, "text/") ||
-		strings.Contains(contentType, "application/xml") ||
-		strings.Contains(contentType, "application/javascript") {
-		// 文本内容
-		body = string(entry.ResponseBody)
-	} else {
-		// 二进制内容
+	} else if isBinaryContent(entry.ResponseBody, contentType) {
 		body = fmt.Sprintf("<Binary data, %d bytes>", len(entry.ResponseBody))
+	} else {
+		body = string(entry.ResponseBody)
 	}
 
 	return map[string]interface{}{
