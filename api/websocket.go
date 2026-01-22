@@ -165,25 +165,43 @@ func (ws *WebSocketServer) setupEventHandlers() {
 
 		// 获取所有流量条目 - 在客户端级别监听
 		client.On(EventTrafficEntries, func(args ...interface{}) {
-			log.Printf("接收到获取所有流量条目请求, 客户端: %s", fmt.Sprintf("%v", client.Id()))
+			// log.Printf("接收到获取所有流量条目请求, 客户端: %s", fmt.Sprintf("%v", client.Id()))
 
 			// 立即返回一个空的条目列表，这样我们就能确认事件处理函数被调用了
 			entries := []*handlers.TrafficEntry{}
+			offsetID := ""
+			if len(args) > 0 {
+				if value, ok := args[0].(string); ok {
+					offsetID = value
+				} else if value := getJsonValue(args[0], "offsetId"); value != nil {
+					if id, ok := value.(string); ok {
+						offsetID = id
+					}
+				}
+			}
 
 			// 如果WebHandler不为空，尝试获取真实数据
 			if ws.WebHandler != nil {
-				entries = ws.WebHandler.GetEntries()
+				if offsetID == "" {
+					entries = ws.WebHandler.GetEntries()
+				} else {
+					entries = ws.WebHandler.GetEntriesAfterID(offsetID)
+				}
 			}
 
-			log.Printf("准备发送 %d 条流量条目到客户端", len(entries))
+			// log.Printf("准备发送 %d 条流量条目到客户端", len(entries))
 			client.Emit(EventTrafficEntries, entries)
-			log.Printf("已发送所有流量条目到客户端: %s, 条目数: %d", fmt.Sprintf("%v", client.Id()), len(entries))
+			if offsetID == "" {
+				log.Printf("已发送所有流量条目到客户端: %s, 条目数: %d", fmt.Sprintf("%v", client.Id()), len(entries))
+			} else {
+				log.Printf("已发送增量流量条目到客户端: %s, offsetID: %s, 条目数: %d", fmt.Sprintf("%v", client.Id()), offsetID, len(entries))
+			}
 		})
 
 		// 获取请求详情 - 在客户端级别监听
 		client.On(EventRequestDetails, func(args ...interface{}) {
 			id := args[0].(string)
-			log.Printf("接收到获取请求详情请求, 客户端: %s, 条目ID: %s", fmt.Sprintf("%v", client.Id()), id)
+			// log.Printf("接收到获取请求详情请求, 客户端: %s, 条目ID: %s", fmt.Sprintf("%v", client.Id()), id)
 
 			entry := ws.WebHandler.GetEntry(id)
 			if entry == nil {
@@ -213,7 +231,7 @@ func (ws *WebSocketServer) setupEventHandlers() {
 			// 处理响应头和响应体
 			responseDetails := ws.formatResponseDetails(entry)
 			client.Emit(EventResponseDetails, responseDetails)
-			log.Printf("已发送响应详情到客户端: %s, 条目ID: %s", fmt.Sprintf("%v", client.Id()), id)
+			// log.Printf("已发送响应详情到客户端: %s, 条目ID: %s", fmt.Sprintf("%v", client.Id()), id)
 		})
 
 		// 清空所有流量条目 - 在客户端级别监听
@@ -255,6 +273,14 @@ func (ws *WebSocketServer) setupEventHandlers() {
 
 // formatRequestDetails 格式化请求详情
 func (ws *WebSocketServer) formatRequestDetails(entry *handlers.TrafficEntry) map[string]interface{} {
+	log.Printf("[WebSocket] 准备请求详情: ID=%s, Method=%s, Path=%s, Content-Type=%s, RequestBody=%d bytes",
+		entry.ID,
+		entry.Method,
+		entry.Path,
+		entry.RequestHeaders.Get("Content-Type"),
+		len(entry.RequestBody),
+	)
+
 	// 处理请求头
 	headers := make(map[string]string)
 	for name, values := range entry.RequestHeaders {
@@ -309,6 +335,22 @@ func (ws *WebSocketServer) formatRequestDetails(entry *handlers.TrafficEntry) ma
 
 // formatResponseDetails 格式化响应详情
 func (ws *WebSocketServer) formatResponseDetails(entry *handlers.TrafficEntry) map[string]interface{} {
+	log.Printf("[WebSocket] 准备响应详情: ID=%s, Status=%d, Content-Type=%s, Content-Size=%d bytes, ResponseBody=%d bytes, IsSSE=%v",
+		entry.ID,
+		entry.StatusCode,
+		entry.ContentType,
+		entry.ContentSize,
+		len(entry.ResponseBody),
+		entry.IsSSE,
+	)
+	if len(entry.ResponseBody) == 0 && entry.ContentSize > 0 && !entry.IsSSE {
+		log.Printf("[WebSocket] 警告: 响应体为空但Content-Size>0, ID=%s, Content-Type=%s, Content-Size=%d",
+			entry.ID,
+			entry.ContentType,
+			entry.ContentSize,
+		)
+	}
+
 	// 处理响应头
 	headers := make(map[string]string)
 	for name, values := range entry.ResponseHeaders {

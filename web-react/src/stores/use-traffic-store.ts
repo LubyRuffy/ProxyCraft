@@ -4,37 +4,9 @@ import { devtools } from 'zustand/middleware';
 import { TrafficDetail, TrafficEntry } from '@/types/traffic';
 
 export type SettingsState = {
-  // WebSocket连接设置
-  autoReconnect: boolean;
-  reconnectInterval: number;
-  maxReconnectAttempts: number;
-
-  // 显示设置
-  entriesPerPage: number;
-  showOnlyHttps: boolean;
-  showOnlySse: boolean;
-
-  // 数据保存设置
-  autoSaveHar: boolean;
-  harSaveInterval: number;
-
-  // 过滤设置
-  filterHost: string;
-  filterMethod: 'all' | 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
-
   // 主题设置
   theme: 'light' | 'dark' | 'auto';
 
-  setAutoReconnect: (autoReconnect: boolean) => void;
-  setReconnectInterval: (interval: number) => void;
-  setMaxReconnectAttempts: (max: number) => void;
-  setEntriesPerPage: (count: number) => void;
-  setShowOnlyHttps: (show: boolean) => void;
-  setShowOnlySse: (show: boolean) => void;
-  setAutoSaveHar: (autoSave: boolean) => void;
-  setHarSaveInterval: (interval: number) => void;
-  setFilterHost: (host: string) => void;
-  setFilterMethod: (method: 'all' | 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH') => void;
   setTheme: (theme: 'light' | 'dark' | 'auto') => void;
   resetSettings: () => void;
 };
@@ -61,17 +33,7 @@ export type TrafficState = {
 };
 
 // 默认设置值
-const defaultSettings: Omit<SettingsState, keyof { setAutoReconnect: any; setReconnectInterval: any; setMaxReconnectAttempts: any; setEntriesPerPage: any; setShowOnlyHttps: any; setShowOnlySse: any; setAutoSaveHar: any; setHarSaveInterval: any; setFilterHost: any; setFilterMethod: any; setTheme: any; resetSettings: any }> = {
-  autoReconnect: true,
-  reconnectInterval: 5,
-  maxReconnectAttempts: 10,
-  entriesPerPage: 50,
-  showOnlyHttps: false,
-  showOnlySse: false,
-  autoSaveHar: false,
-  harSaveInterval: 30,
-  filterHost: '',
-  filterMethod: 'all',
+const defaultSettings: Omit<SettingsState, keyof { setTheme: any; resetSettings: any }> = {
   theme: 'auto' as const,
 };
 
@@ -80,16 +42,6 @@ const settingsStore = create<SettingsState>()(
   devtools(
     (set) => ({
       ...defaultSettings,
-      setAutoReconnect: (autoReconnect) => set({ autoReconnect }),
-      setReconnectInterval: (interval) => set({ reconnectInterval: Math.max(1, interval) }),
-      setMaxReconnectAttempts: (max) => set({ maxReconnectAttempts: Math.max(1, max) }),
-      setEntriesPerPage: (count) => set({ entriesPerPage: Math.max(10, count) }),
-      setShowOnlyHttps: (show) => set({ showOnlyHttps: show }),
-      setShowOnlySse: (show) => set({ showOnlySse: show }),
-      setAutoSaveHar: (autoSave) => set({ autoSaveHar: autoSave }),
-      setHarSaveInterval: (interval) => set({ harSaveInterval: Math.max(5, interval) }),
-      setFilterHost: (host) => set({ filterHost: host }),
-      setFilterMethod: (method: 'all' | 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH') => set({ filterMethod: method }),
       setTheme: (theme) => set({ theme }),
       resetSettings: () => set(defaultSettings),
     }),

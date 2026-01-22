@@ -18,9 +18,9 @@ func (s *Server) newTransport(targetHost string, secure bool) *http.Transport {
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		ExpectContinueTimeout: 10 * time.Second,
 		DisableCompression:    true,
-		ResponseHeaderTimeout: 5 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
 	}
 
 	if secure {
@@ -91,6 +91,13 @@ func (s *Server) sendProxyRequest(proxyReq *http.Request, transport http.RoundTr
 		proxyReq.Header.Set("Accept", "text/event-stream")
 		proxyReq.Header.Set("Cache-Control", "no-cache")
 		proxyReq.Header.Set("Connection", "keep-alive")
+		if detector, ok := transport.(*earlySSEDetector); ok {
+			if baseTransport, ok := detector.base.(*http.Transport); ok {
+				baseTransport.ResponseHeaderTimeout = 0
+			}
+		} else if baseTransport, ok := transport.(*http.Transport); ok {
+			baseTransport.ResponseHeaderTimeout = 0
+		}
 	}
 
 	resp, err := client.Do(proxyReq)

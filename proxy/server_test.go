@@ -1,14 +1,19 @@
 package proxy
 
 import (
+	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/LubyRuffy/ProxyCraft/certs"
 	"github.com/LubyRuffy/ProxyCraft/harlogger"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/net/http2"
 )
 
 func TestNewServer(t *testing.T) {
@@ -154,6 +159,53 @@ func TestServerStart(t *testing.T) {
 		// 如果连接失败，记录错误（在CI环境中可能会失败）
 		t.Logf("无法连接到代理服务器: %v", err)
 	}
+}
+
+func TestServerH2CProxy(t *testing.T) {
+	certMgr, _ := certs.NewManager()
+	harLog := harlogger.NewLogger("", "ProxyCraft", "0.1.0")
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/h2c", r.URL.Path)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("h2c-ok"))
+	}))
+	defer backend.Close()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	proxyAddr := listener.Addr().String()
+
+	server := NewServer(proxyAddr, certMgr, false, harLog, nil, false)
+	httpServer := server.buildHTTPServer()
+
+	go func() {
+		_ = httpServer.Serve(listener)
+	}()
+	defer func() {
+		_ = httpServer.Close()
+	}()
+
+	transport := &http2.Transport{
+		AllowHTTP: true,
+		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+			return net.Dial(network, proxyAddr)
+		},
+	}
+	client := &http.Client{Transport: transport}
+
+	req, err := http.NewRequest(http.MethodGet, backend.URL+"/h2c", nil)
+	require.NoError(t, err)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "h2c-ok", string(body))
+	assert.Equal(t, 2, resp.ProtoMajor)
 }
 
 func TestHeaderInterceptingTransportStructure(t *testing.T) {

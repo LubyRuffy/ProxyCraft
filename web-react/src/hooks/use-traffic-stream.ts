@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import {
   clearTrafficRemote,
@@ -21,6 +21,19 @@ export function useTrafficStream() {
   const entries = useTrafficStore((state) => state.entries);
   const selectEntry = useTrafficStore((state) => state.selectEntry);
   const setLoading = useTrafficStore((state) => state.setLoading);
+  const connected = useTrafficStore((state) => state.connected);
+  const latestEntryIdRef = useRef<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const lastSseDetailRequestRef = useRef<{ id: string; ts: number } | null>(null);
+  const sseDetailThrottleMs = 500;
+
+  useEffect(() => {
+    latestEntryIdRef.current = entries[0]?.id ?? null;
+  }, [entries]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   useEffect(() => {
     trafficSocket.connect();
@@ -30,7 +43,11 @@ export function useTrafficStream() {
         setConnected(true);
         setError(null);
         setTransport(trafficSocket.getTransport());
-        trafficSocket.requestTrafficEntries(true);
+        const latestEntryId = latestEntryIdRef.current;
+        trafficSocket.requestTrafficEntries({
+          force: !latestEntryId,
+          offsetId: latestEntryId ?? undefined,
+        });
       }),
       trafficSocket.onDisconnect((reason) => {
         setConnected(false);
@@ -42,13 +59,26 @@ export function useTrafficStream() {
         setTransport('disconnected');
         setError(`WebSocket连接错误: ${error.message}`);
       }),
-      trafficSocket.onTrafficEntries((incoming) => {
-        setEntries(incoming);
+      trafficSocket.onTrafficEntries((incoming, mode) => {
+        if (mode === 'full') {
+          setEntries(incoming);
+        } else {
+          incoming.forEach((entry) => addOrUpdateEntry(entry));
+        }
         setError(null);
         setLoading(false);
       }),
       trafficSocket.onNewTrafficEntry((entry) => {
         addOrUpdateEntry(entry);
+        const selected = selectedIdRef.current;
+        if (selected && entry.id === selected && entry.isSSE && trafficSocket.isConnected()) {
+          const now = Date.now();
+          const last = lastSseDetailRequestRef.current;
+          if (!last || last.id != entry.id || now - last.ts >= sseDetailThrottleMs) {
+            trafficSocket.requestResponseDetails(entry.id);
+            lastSseDetailRequestRef.current = { id: entry.id, ts: now };
+          }
+        }
       }),
       trafficSocket.onTrafficClear(() => {
         clearEntries();
@@ -135,11 +165,13 @@ export function useTrafficStream() {
     if (!selectedId || !entry?.isSSE || entry.isSSECompleted) {
       return undefined;
     }
+    if (connected || trafficSocket.isConnected()) {
+      return undefined;
+    }
 
     const timer = window.setInterval(() => {
       if (trafficSocket.isConnected()) {
-        trafficSocket.requestRequestDetails(selectedId);
-        trafficSocket.requestResponseDetails(selectedId);
+        return;
       } else {
         fetchTrafficDetail(selectedId)
           .then((detail) => {
@@ -155,12 +187,16 @@ export function useTrafficStream() {
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [entries, mergeDetail, selectedId, setError]);
+  }, [connected, entries, mergeDetail, selectedId, setError]);
 
   const refresh = useCallback(() => {
     setLoading(true);
     if (trafficSocket.isConnected()) {
-      trafficSocket.requestTrafficEntries(true);
+      const latestEntryId = latestEntryIdRef.current;
+      trafficSocket.requestTrafficEntries({
+        force: !latestEntryId,
+        offsetId: latestEntryId ?? undefined,
+      });
       return;
     }
     fetchTrafficEntries()

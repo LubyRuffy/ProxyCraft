@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -56,31 +56,35 @@ type NewEntryCallback func(entry *TrafficEntry)
 
 // WebHandler 实现了EventHandler接口，用于Web模式
 type WebHandler struct {
-	entries          []*TrafficEntry          // 流量条目
+	entries          []*TrafficEntry          // 流量条目（仅用于运行时追踪）
 	entriesMap       map[string]*TrafficEntry // 通过ID查询条目
 	entryMutex       sync.RWMutex             // 保护entries和entriesMap的互斥锁
 	verbose          bool                     // 是否输出详细日志
-	nextID           int                      // 下一个ID
-	idMutex          sync.Mutex               // 保护nextID的互斥锁
 	newEntryCallback NewEntryCallback         // 新条目回调函数
 	callbackMutex    sync.RWMutex             // 保护回调函数的互斥锁
 	maxEntries       int                      // 最大条目数
+	db              *sql.DB                   // SQLite数据库连接
+	dbPath          string                    // SQLite数据库路径
 }
 
 // NewWebHandler 创建一个新的WebHandler
-func NewWebHandler(verbose bool) *WebHandler {
+func NewWebHandler(verbose bool, dbPath string) (*WebHandler, error) {
 	handler := &WebHandler{
 		entries:    make([]*TrafficEntry, 0),
 		entriesMap: make(map[string]*TrafficEntry),
 		verbose:    verbose,
-		nextID:     1,
 		maxEntries: 2000, // 默认最多保存2000条记录
+		dbPath:     dbPath,
+	}
+
+	if err := handler.initSQLite(dbPath); err != nil {
+		return nil, err
 	}
 
 	// 启动自动清理任务
 	go handler.startCleanupTask()
 
-	return handler
+	return handler, nil
 }
 
 // 自动清理任务
@@ -94,32 +98,6 @@ func (h *WebHandler) startCleanupTask() {
 }
 
 // 清理旧的条目
-func (h *WebHandler) cleanupOldEntries() {
-	h.entryMutex.Lock()
-	defer h.entryMutex.Unlock()
-
-	entriesLen := len(h.entries)
-	if entriesLen <= h.maxEntries {
-		return
-	}
-
-	// 计算需要删除的条目数量
-	deleteCount := entriesLen - h.maxEntries
-
-	if h.verbose {
-		log.Printf("[WebHandler] 清理 %d 条旧流量记录，当前总数: %d", deleteCount, entriesLen)
-	}
-
-	// 删除最旧的条目
-	for i := 0; i < deleteCount; i++ {
-		// 从map中删除
-		delete(h.entriesMap, h.entries[i].ID)
-	}
-
-	// 更新切片
-	h.entries = h.entries[deleteCount:]
-}
-
 // SetNewEntryCallback 设置新条目回调函数
 func (h *WebHandler) SetNewEntryCallback(callback NewEntryCallback) {
 	h.callbackMutex.Lock()
@@ -143,15 +121,6 @@ func (h *WebHandler) notifyNewEntry(entry *TrafficEntry) {
 	if h.newEntryCallback != nil {
 		h.newEntryCallback(entry)
 	}
-}
-
-// generateID 生成唯一ID
-func (h *WebHandler) generateID() string {
-	h.idMutex.Lock()
-	defer h.idMutex.Unlock()
-	id := fmt.Sprintf("%d", h.nextID)
-	h.nextID++
-	return id
 }
 
 func resolveProcessInfo(remoteAddr string) (string, string) {
@@ -397,32 +366,58 @@ func findIconFile(iconName string) string {
 // GetEntries 返回所有流量条目
 func (h *WebHandler) GetEntries() []*TrafficEntry {
 	startTime := time.Now()
-
-	h.entryMutex.RLock()
-
-	// 获取entries的长度
-	entriesLen := len(h.entries)
-	if entriesLen == 0 {
-		h.entryMutex.RUnlock()
+	entries, err := h.loadEntries(1000)
+	if err != nil {
+		if h.verbose {
+			log.Printf("[WebHandler] GetEntries: 查询数据库失败: %v", err)
+		}
 		return []*TrafficEntry{}
 	}
 
-	// 如果条目数量过大，只返回最新的1000条
-	maxEntries := 1000
-	startIndex := 0
-	if entriesLen > maxEntries {
-		startIndex = entriesLen - maxEntries
+	elapsed := time.Since(startTime)
+	if elapsed > 100*time.Millisecond {
+		log.Printf("[WebHandler] GetEntries: 返回 %d 条记录耗时 %v", len(entries), elapsed)
 	}
 
-	// 创建结果数组，直接在锁内生成结果
-	resultLen := entriesLen - startIndex
+	return entries
+}
+
+// GetEntriesAfterID 返回指定ID之后的流量条目，offsetID为空时等同于GetEntries
+func (h *WebHandler) GetEntriesAfterID(offsetID string) []*TrafficEntry {
+	startTime := time.Now()
+	entries, err := h.loadEntriesAfterID(offsetID)
+	if err != nil {
+		if h.verbose {
+			log.Printf("[WebHandler] GetEntriesAfterID: 查询数据库失败: %v", err)
+		}
+		return []*TrafficEntry{}
+	}
+
+	elapsed := time.Since(startTime)
+	if elapsed > 100*time.Millisecond {
+		log.Printf("[WebHandler] GetEntriesAfterID: 返回 %d 条记录耗时 %v", len(entries), elapsed)
+	}
+
+	return entries
+}
+
+// snapshotEntriesLocked 在持有读锁情况下生成轻量级条目快照
+func (h *WebHandler) snapshotEntriesLocked(startIndex int, endIndex int) []*TrafficEntry {
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	if endIndex > len(h.entries) {
+		endIndex = len(h.entries)
+	}
+	if startIndex >= endIndex {
+		return []*TrafficEntry{}
+	}
+
+	resultLen := endIndex - startIndex
 	result := make([]*TrafficEntry, resultLen)
 
-	// 生成轻量级条目，不包含大数据字段
 	for i := 0; i < resultLen; i++ {
 		srcEntry := h.entries[startIndex+i]
-
-		// 创建一个不包含请求体和响应体等大数据的新条目
 		result[i] = &TrafficEntry{
 			ID:             srcEntry.ID,
 			StartTime:      srcEntry.StartTime,
@@ -447,24 +442,27 @@ func (h *WebHandler) GetEntries() []*TrafficEntry {
 		}
 	}
 
-	// 释放锁
-	h.entryMutex.RUnlock()
-
-	// 记录性能日志
-	elapsed := time.Since(startTime)
-	if elapsed > 100*time.Millisecond {
-		log.Printf("[WebHandler] GetEntries: 返回 %d 条记录耗时 %v", resultLen, elapsed)
-	}
-
 	return result
 }
 
 // GetEntry 根据ID获取一个特定的流量条目
 func (h *WebHandler) GetEntry(id string) *TrafficEntry {
 	h.entryMutex.RLock()
-	defer h.entryMutex.RUnlock()
+	entry := h.entriesMap[id]
+	h.entryMutex.RUnlock()
+	if entry != nil {
+		return entry
+	}
 
-	return h.entriesMap[id]
+	entry, err := h.loadEntry(id)
+	if err != nil {
+		if h.verbose {
+			log.Printf("[WebHandler] GetEntry: 查询数据库失败: %v", err)
+		}
+		return nil
+	}
+
+	return entry
 }
 
 // ClearEntries 清空所有流量条目
@@ -474,6 +472,7 @@ func (h *WebHandler) ClearEntries() {
 
 	h.entries = make([]*TrafficEntry, 0)
 	h.entriesMap = make(map[string]*TrafficEntry)
+	_ = h.clearEntriesInDB()
 }
 
 // OnRequest 实现 EventHandler 接口
@@ -484,12 +483,8 @@ func (h *WebHandler) OnRequest(ctx *proxy.RequestContext) *http.Request {
 		go h.cleanupOldEntries()
 	}
 
-	// 生成ID并准备数据
-	id := h.generateID()
-
 	// 准备新的流量条目，尽可能在锁外完成
 	entry := &TrafficEntry{
-		ID:             id,
 		StartTime:      ctx.StartTime,
 		Host:           ctx.Request.Host,
 		Method:         ctx.Request.Method,
@@ -519,7 +514,15 @@ func (h *WebHandler) OnRequest(ctx *proxy.RequestContext) *http.Request {
 		}
 	}
 
-	// 数据准备好后，再获取锁添加条目
+	id, err := h.insertEntry(entry)
+	if err != nil {
+		if h.verbose {
+			log.Printf("[WebHandler] 保存请求到数据库失败: %v", err)
+		}
+		return ctx.Request
+	}
+	entry.ID = id
+
 	h.entryMutex.Lock()
 	h.entries = append(h.entries, entry)
 	h.entriesMap[id] = entry
@@ -534,6 +537,9 @@ func (h *WebHandler) OnRequest(ctx *proxy.RequestContext) *http.Request {
 	if h.verbose {
 		log.Printf("[WebHandler] Captured request: %s %s", entry.Method, entry.URL)
 	}
+
+	// 通知有新的流量条目(请求开始)
+	go h.notifyNewEntry(entry)
 
 	return ctx.Request
 }
@@ -689,6 +695,10 @@ func (h *WebHandler) OnResponse(ctx *proxy.ResponseContext) *http.Response {
 	// 释放锁
 	h.entryMutex.Unlock()
 
+	if err := h.updateResponse(entry); err != nil && h.verbose {
+		log.Printf("[WebHandler] 保存响应到数据库失败: %v", err)
+	}
+
 	// 通知有新的完整流量条目(请求+响应)
 	go h.notifyNewEntry(entry)
 
@@ -751,6 +761,10 @@ func (h *WebHandler) OnError(err error, reqCtx *proxy.RequestContext) {
 
 	if h.verbose {
 		log.Printf("[WebHandler] Captured error: %v for %s %s", err, entry.Method, entry.URL)
+	}
+
+	if err := h.updateError(entry); err != nil && h.verbose {
+		log.Printf("[WebHandler] 保存错误到数据库失败: %v", err)
 	}
 
 	// 通知有新的条目更新
@@ -819,6 +833,10 @@ func (h *WebHandler) OnSSE(event string, ctx *proxy.ResponseContext) {
 
 		h.entryMutex.Unlock()
 
+		if err := h.updateSSE(entry); err != nil && h.verbose {
+			log.Printf("[WebHandler] 保存SSE完成到数据库失败: %v", err)
+		}
+
 		// 通知有新的完整流量条目(请求+响应)
 		log.Printf("[WebHandler] 广播更新的SSE条目，ID: %s, IsSSECompleted: %v", id, true)
 		go h.notifyNewEntry(entry)
@@ -828,6 +846,8 @@ func (h *WebHandler) OnSSE(event string, ctx *proxy.ResponseContext) {
 		}
 		return
 	}
+
+	completionEvent := isSSECompletionEvent(event)
 
 	// 处理正常的SSE事件
 	// 准备更新的数据
@@ -870,8 +890,18 @@ func (h *WebHandler) OnSSE(event string, ctx *proxy.ResponseContext) {
 	entry.ContentType = "text/event-stream"
 	entry.EndTime = endTime
 	entry.Duration = duration
+	if completionEvent {
+		entry.IsSSECompleted = true
+		if h.verbose {
+			log.Printf("[WebHandler] 识别SSE完成事件，ID: %s, IsSSECompleted: %v", id, entry.IsSSECompleted)
+		}
+	}
 
 	h.entryMutex.Unlock()
+
+	if err := h.updateSSE(entry); err != nil && h.verbose {
+		log.Printf("[WebHandler] 保存SSE事件到数据库失败: %v", err)
+	}
 
 	// 通知有新的完整流量条目(请求+响应)
 	go h.notifyNewEntry(entry)
@@ -880,4 +910,18 @@ func (h *WebHandler) OnSSE(event string, ctx *proxy.ResponseContext) {
 		log.Printf("[WebHandler] SSE event: %s, updated entry ID %s, total size %d bytes",
 			event, id, entry.ContentSize)
 	}
+}
+
+func isSSECompletionEvent(event string) bool {
+	for _, line := range strings.Split(event, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "event:") {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+		if name == "response.completed" {
+			return true
+		}
+	}
+	return false
 }

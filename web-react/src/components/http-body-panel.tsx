@@ -8,6 +8,8 @@ import { EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import CodeMirror from '@uiw/react-codemirror';
 
+import { cn } from '@/lib/utils';
+
 export type BodyFormat = 'json' | 'html' | 'xml' | 'yaml' | 'javascript' | 'text' | 'sse';
 export type BodyConfig = { value: string; format: BodyFormat };
 
@@ -40,10 +42,15 @@ const getLanguageExtension = (format: BodyFormat) => {
   }
 };
 
-const BodyViewer = ({ config }: { config: BodyConfig }) => {
+const BodyViewer = ({ config, className }: { config: BodyConfig; className?: string }) => {
   if (!config.value) {
     return (
-      <div className="mt-1 rounded-md border border-border/60 bg-muted/30 p-2 text-xs text-muted-foreground">
+      <div
+        className={cn(
+          'mt-1 flex min-h-0 flex-1 items-center justify-center rounded-md border border-border/60 bg-muted/30 p-2 text-xs text-muted-foreground',
+          className
+        )}
+      >
         无正文
       </div>
     );
@@ -51,7 +58,12 @@ const BodyViewer = ({ config }: { config: BodyConfig }) => {
 
   if (config.value.length > MAX_HIGHLIGHT_LENGTH) {
     return (
-      <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-xs leading-relaxed text-foreground">
+      <pre
+        className={cn(
+          'mt-1 min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-xs leading-relaxed text-foreground',
+          className
+        )}
+      >
         {config.value}
       </pre>
     );
@@ -62,7 +74,12 @@ const BodyViewer = ({ config }: { config: BodyConfig }) => {
     const sseKeys = new Set(['event', 'data', 'id', 'retry']);
 
     return (
-      <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-xs leading-relaxed text-foreground">
+      <pre
+        className={cn(
+          'mt-1 min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-xs leading-relaxed text-foreground',
+          className
+        )}
+      >
         {lines.map((line, index) => {
           const lineKey = `${index}-${line}`;
           if (!line) {
@@ -107,25 +124,37 @@ const BodyViewer = ({ config }: { config: BodyConfig }) => {
   const extensions = language ? [...baseExtensions, language] : baseExtensions;
 
   return (
-    <div className="mt-1 max-h-48 overflow-hidden rounded-md border border-border/60 bg-muted/40 text-xs">
+    <div
+      className={cn(
+        'mt-1 min-h-0 flex-1 overflow-hidden rounded-md border border-border/60 bg-muted/40 text-xs',
+        className
+      )}
+    >
       <CodeMirror
         value={config.value}
         extensions={extensions}
         editable={false}
         basicSetup={false}
         height="100%"
-        maxHeight="12rem"
-        className="text-xs"
+        className="h-full text-xs"
       />
     </div>
   );
 };
 
-export function HttpBodyPanel({ title, config }: { title: string; config: BodyConfig }) {
+export function HttpBodyPanel({
+  title,
+  config,
+  className,
+}: {
+  title: string;
+  config: BodyConfig;
+  className?: string;
+}) {
   return (
-    <div>
+    <div className={cn('flex min-h-0 flex-col', className)}>
       <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{title}</p>
-      <BodyViewer config={config} />
+      <BodyViewer config={config} className="flex-1 min-h-0" />
     </div>
   );
 }

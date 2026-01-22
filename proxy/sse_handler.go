@@ -97,6 +97,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, respCtx *ResponseContext) erro
 
 	// Read and forward SSE events
 	reader := bufio.NewReader(respCtx.Response.Body)
+	var eventBuffer bytes.Buffer
 
 	// 如果启用了流量输出，初始化前缀并输出头部
 	var dumpPrefix string
@@ -117,6 +118,30 @@ func (s *Server) handleSSE(w http.ResponseWriter, respCtx *ResponseContext) erro
 		fmt.Printf("%s Starting SSE stream\n", dumpPrefix)
 	}
 
+	flushEvent := func() error {
+		if eventBuffer.Len() == 0 {
+			return nil
+		}
+
+		payload := eventBuffer.Bytes()
+		eventBuffer.Reset()
+
+		_, err := tee.Write(payload)
+		if err != nil {
+			if respCtx.ReqCtx != nil {
+				s.notifyError(fmt.Errorf("error writing SSE data: %v", err), respCtx.ReqCtx)
+			}
+			return fmt.Errorf("error writing SSE data: %v", err)
+		}
+
+		eventStr := strings.TrimRight(string(payload), "\r\n")
+		if respCtx != nil && strings.TrimSpace(eventStr) != "" {
+			s.notifySSE(eventStr, respCtx)
+		}
+
+		return nil
+	}
+
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -130,16 +155,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, respCtx *ResponseContext) erro
 			return fmt.Errorf("error reading SSE stream: %v", err)
 		}
 
-		// 写入 tee，它会同时写入客户端和缓冲区
-		_, err = tee.Write(line)
-		if err != nil {
-			// 通知错误
-			if respCtx.ReqCtx != nil {
-				s.notifyError(fmt.Errorf("error writing SSE data: %v", err), respCtx.ReqCtx)
-			}
-			return fmt.Errorf("error writing SSE data: %v", err)
-		}
-
 		// Log the event if verbose
 		lineStr := strings.TrimSpace(string(line))
 		logSSEEvent(lineStr, s.Verbose)
@@ -149,10 +164,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, respCtx *ResponseContext) erro
 			fmt.Printf("%s %s\n", dumpPrefix, lineStr)
 		}
 
-		// 通知 SSE 事件处理
-		if respCtx != nil && lineStr != "" {
-			s.notifySSE(lineStr, respCtx)
+		eventBuffer.Write(line)
+		if lineStr == "" {
+			if err := flushEvent(); err != nil {
+				return err
+			}
 		}
+	}
+
+	if err := flushEvent(); err != nil {
+		return err
 	}
 
 	// 流结束后，记录 HAR 条目并标记SSE已完成
@@ -223,6 +244,14 @@ func isServerSentEvent(resp *http.Response) bool {
 	// 检查是否是标准的 SSE Content-Type
 	if strings.Contains(contentType, "text/event-stream") {
 		return true
+	}
+
+	// Content-Type 缺失时，回退到请求头的 Accept 判定
+	if contentType == "" && resp.Request != nil {
+		acceptHeader := resp.Request.Header.Get("Accept")
+		if strings.Contains(acceptHeader, "text/event-stream") {
+			return true
+		}
 	}
 
 	// 确保 Request 不为 nil

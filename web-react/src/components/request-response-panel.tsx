@@ -232,8 +232,8 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
     const responseBodyConfig = buildEditorConfig(detail?.response?.body, detail?.response);
 
     const renderRequestPretty = () => (
-      <div className="space-y-2">
-        <div>
+      <div className="flex h-full min-h-0 flex-col gap-2">
+        <div className="shrink-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">请求头</p>
           <div className="mt-1 max-h-44 overflow-auto rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
             <div className="text-foreground">{buildRequestLine(entry)}</div>
@@ -249,13 +249,13 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
             )}
           </div>
         </div>
-        <HttpBodyPanel title="请求体" config={requestBodyConfig} />
+        <HttpBodyPanel title="请求体" config={requestBodyConfig} className="flex-1 min-h-0" />
       </div>
     );
 
     const renderResponsePretty = () => (
-      <div className="space-y-2">
-        <div>
+      <div className="flex h-full min-h-0 flex-col gap-2">
+        <div className="shrink-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">响应头</p>
           <div className="mt-1 max-h-44 overflow-auto rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
             <div className="text-foreground">{buildResponseLine(entry)}</div>
@@ -271,13 +271,13 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
             )}
           </div>
         </div>
-        <HttpBodyPanel title="响应体" config={responseBodyConfig} />
+        <HttpBodyPanel title="响应体" config={responseBodyConfig} className="flex-1 min-h-0" />
       </div>
     );
 
     const requestSection = (
-      <section className="flex h-full min-h-0 flex-col rounded-lg border border-border/60 bg-card/80">
-        <header className="flex items-center justify-between gap-2 bg-background/40 px-2 py-1 text-[11px]">
+      <section className="flex h-full min-h-0 flex-col border border-border/60 bg-card/80">
+        <header className="flex items-center justify-between gap-2 border-b border-border/60 bg-background/40 px-2 py-1 text-[11px]">
           <span className="font-semibold text-muted-foreground">请求</span>
           {renderTabRow(requestTab, setRequestTab)}
         </header>
@@ -288,7 +288,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
     );
 
     const responseSection = (
-      <section className="flex h-full min-h-0 flex-col rounded-lg border border-border/60 bg-card/80">
+      <section className="flex h-full min-h-0 flex-col border border-border/60 bg-card/80">
         <header className="flex items-center justify-between gap-2 border-b border-border/60 bg-background/40 px-2 py-1 text-[11px]">
           <span className="font-semibold text-muted-foreground">响应</span>
           {renderTabRow(responseTab, setResponseTab)}
@@ -308,7 +308,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
           <ResizablePanel defaultSize={50} minSize={20} className="min-h-0 min-w-0">
             {requestSection}
           </ResizablePanel>
-          <ResizableHandle className="bg-border/70" />
+          <ResizableHandle className="bg-border/60 transition-colors hover:bg-accent/60 focus:outline-none" />
           <ResizablePanel defaultSize={50} minSize={20} className="min-h-0 min-w-0">
             {responseSection}
           </ResizablePanel>
@@ -326,7 +326,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col overflow-x-hidden">
-      <div className="flex shrink-0 min-w-0 flex-nowrap items-center justify-between gap-3 border-b border-border/60 px-3 py-1.5 text-xs">
+      <div className="flex shrink-0 min-w-0 flex-nowrap items-center justify-between gap-3  px-3 py-1.5 text-xs">
         <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-3">
           <div className="min-w-0">
             <p className="uppercase racking-[0.25em] text-muted-foreground">Inspector</p>

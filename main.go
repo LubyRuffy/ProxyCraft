@@ -143,7 +143,10 @@ func main() {
 		log.Printf("启动Web模式...")
 
 		// 创建Web事件处理器
-		webHandler := handlers.NewWebHandler(cfg.Verbose)
+		webHandler, err := handlers.NewWebHandler(cfg.Verbose, cfg.SQLitePath)
+		if err != nil {
+			log.Fatalf("初始化SQLite数据库失败: %v", err)
+		}
 
 		// 创建API服务器，默认使用8081端口
 		apiServer := api.NewServer(webHandler, 8081)

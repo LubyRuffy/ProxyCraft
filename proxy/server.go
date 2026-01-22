@@ -10,7 +10,8 @@ import (
 
 	"github.com/LubyRuffy/ProxyCraft/certs"
 	"github.com/LubyRuffy/ProxyCraft/harlogger" // Added for HAR logging
-	// Added for HTTP/2 support
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 // ServerConfig 包含所有服务器配置项
@@ -89,5 +90,15 @@ func (s *Server) SetEventHandler(handler EventHandler) {
 // Start begins listening for incoming proxy requests
 func (s *Server) Start() error {
 	fmt.Printf("Proxy server starting on %s\n", s.Addr)
-	return http.ListenAndServe(s.Addr, http.HandlerFunc(s.handleHTTP))
+	server := s.buildHTTPServer()
+	return server.ListenAndServe()
+}
+
+func (s *Server) buildHTTPServer() *http.Server {
+	h2Server := &http2.Server{}
+	handler := h2c.NewHandler(http.HandlerFunc(s.handleHTTP), h2Server)
+	return &http.Server{
+		Addr:    s.Addr,
+		Handler: handler,
+	}
 }

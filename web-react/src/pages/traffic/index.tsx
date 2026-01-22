@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { useTrafficStream } from '@/hooks/use-traffic-stream';
+import { useLayoutStore } from '@/stores/use-layout-store';
 import { useTrafficStore } from '@/stores/use-traffic-store';
 import { TrafficEntry } from '@/types/traffic';
 
@@ -17,6 +18,8 @@ export function TrafficPage() {
   const loading = useTrafficStore((state) => state.loading);
   const error = useTrafficStore((state) => state.error);
   const connected = useTrafficStore((state) => state.connected);
+  const showDetail = useLayoutStore((state) => state.showDetail);
+  const setShowDetail = useLayoutStore((state) => state.setShowDetail);
 
   const { refresh, reconnect, clearRemoteTraffic } = useTrafficStream();
 
@@ -25,6 +28,12 @@ export function TrafficPage() {
       refresh();
     }
   }, [entries.length, refresh]);
+
+  useEffect(() => {
+    if (selectedId) {
+      setShowDetail(true);
+    }
+  }, [selectedId, setShowDetail]);
 
   const list: TrafficEntry[] = useMemo(() => entries ?? [], [entries]);
   const selectedEntry = useMemo(
@@ -76,7 +85,7 @@ export function TrafficPage() {
             className="h-full min-h-0 w-full min-w-0 overflow-hidden overflow-x-hidden"
           >
             <ResizablePanel
-              defaultSize={62}
+              defaultSize={50}
               minSize={35}
               className="flex h-full min-w-0 flex-col rounded-none border border-border/60 bg-card/70"
             >
@@ -87,8 +96,15 @@ export function TrafficPage() {
                     <Badge variant="secondary">{list.length}</Badge>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge variant={connected ? 'success' : 'warning'}>
-                      {connected ? 'WebSocket 已连接' : 'WebSocket 未连接'}
+                    <Badge variant={connected ? 'success' : 'warning'} asChild>
+                      <button
+                        type="button"
+                        onClick={handleReconnect}
+                        disabled={loading}
+                        title="点击尝试重新连接"
+                      >
+                        {connected ? 'WebSocket 已连接' : 'WebSocket 未连接'}
+                      </button>
                     </Badge>
                     <span>最后更新：{lastUpdated}</span>
                   </div>
@@ -106,15 +122,6 @@ export function TrafficPage() {
                   >
                     清空
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={handleReconnect}
-                    disabled={loading}
-                    className="h-6 text-xs"
-                  >
-                    重新连接
-                  </Button>
                 </div>
               </div>
               <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
@@ -126,16 +133,20 @@ export function TrafficPage() {
                 />
               </div>
             </ResizablePanel>
-            <ResizableHandle className="bg-border/60" />
-            <ResizablePanel
-              defaultSize={38}
-              minSize={25}
-              className="flex h-full min-w-0 flex-col rounded-none border border-border/60 bg-card/70"
-            >
-              <div className="flex-1 min-w-0 overflow-x-hidden">
-                <RequestResponsePanel entry={selectedEntry ?? undefined} detail={detail} loading={loading} />
-              </div>
-            </ResizablePanel>
+            {showDetail ? (
+              <>
+                <ResizableHandle className="bg-border/60 transition-colors hover:bg-accent/60 focus:outline-none" />
+                <ResizablePanel
+                  defaultSize={50}
+                  minSize={25}
+                  className="flex h-full min-w-0 flex-col rounded-none border border-border/60 bg-card/70"
+                >
+                  <div className="flex-1 min-w-0 overflow-x-hidden">
+                    <RequestResponsePanel entry={selectedEntry ?? undefined} detail={detail} loading={loading} />
+                  </div>
+                </ResizablePanel>
+              </>
+            ) : null}
           </ResizablePanelGroup>
         </div>
       </section>

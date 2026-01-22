@@ -16,12 +16,14 @@ export enum TrafficSocketEvent {
 const DEFAULT_WS_URL = import.meta.env.VITE_PROXYCRAFT_SOCKET_URL ?? 'http://localhost:8081';
 
 type Unsubscribe = () => void;
+type TrafficEntriesMode = 'full' | 'delta';
 
 class TrafficWebSocketService {
   private socket?: ReturnType<typeof io>;
   private url: string = DEFAULT_WS_URL;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private hasRequestedEntries = false;
+  private pendingEntriesMode: TrafficEntriesMode | null = null;
 
   init(url: string = DEFAULT_WS_URL) {
     this.url = url;
@@ -71,6 +73,7 @@ class TrafficWebSocketService {
     socket?.disconnect();
     this.clearReconnectTimer();
     this.hasRequestedEntries = false;
+    this.pendingEntriesMode = null;
   }
 
   reconnect() {
@@ -95,18 +98,26 @@ class TrafficWebSocketService {
       this.socket = undefined;
     }
     this.hasRequestedEntries = false;
+    this.pendingEntriesMode = null;
   }
 
-  requestTrafficEntries(force = false) {
+  requestTrafficEntries(options?: { force?: boolean; offsetId?: string }) {
+    const { force = false, offsetId } = options ?? {};
     const socket = this.getSocket();
     if (!socket) {
       return;
     }
-    if (this.hasRequestedEntries && !force) {
+    if (this.hasRequestedEntries && !force && !offsetId) {
       return;
     }
     if (socket.connected) {
-      socket.emit(TrafficSocketEvent.TRAFFIC_ENTRIES);
+      if (offsetId) {
+        socket.emit(TrafficSocketEvent.TRAFFIC_ENTRIES, { offsetId });
+        this.pendingEntriesMode = 'delta';
+      } else {
+        socket.emit(TrafficSocketEvent.TRAFFIC_ENTRIES);
+        this.pendingEntriesMode = 'full';
+      }
       this.hasRequestedEntries = true;
     } else {
       this.connect();
@@ -152,10 +163,15 @@ class TrafficWebSocketService {
     return () => socket?.off(TrafficSocketEvent.CONNECT_ERROR, callback);
   }
 
-  onTrafficEntries(callback: (entries: TrafficEntry[]) => void): Unsubscribe {
+  onTrafficEntries(callback: (entries: TrafficEntry[], mode: TrafficEntriesMode) => void): Unsubscribe {
     const socket = this.getSocket();
-    socket?.on(TrafficSocketEvent.TRAFFIC_ENTRIES, callback);
-    return () => socket?.off(TrafficSocketEvent.TRAFFIC_ENTRIES, callback);
+    const handler = (entries: TrafficEntry[]) => {
+      const mode = this.pendingEntriesMode ?? 'full';
+      this.pendingEntriesMode = null;
+      callback(entries, mode);
+    };
+    socket?.on(TrafficSocketEvent.TRAFFIC_ENTRIES, handler);
+    return () => socket?.off(TrafficSocketEvent.TRAFFIC_ENTRIES, handler);
   }
 
   onNewTrafficEntry(callback: (entry: TrafficEntry) => void): Unsubscribe {

@@ -8,7 +8,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from '@tanstack/react-table';
-import { ArrowUpDown } from 'lucide-react';
+import { ArrowUpDown, Check, Loader2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -31,6 +31,26 @@ const statusTint = (status: number) => {
 };
 
 const columns: ColumnDef<TrafficEntry>[] = [
+  {
+    id: 'status',
+    header: '状态',
+    cell: ({ row }) => {
+      const entry = row.original;
+      const isPending = entry.isSSE
+        ? !entry.isSSECompleted
+        : entry.statusCode === 0 && !entry.error;
+
+      return (
+        <div className="flex items-center justify-center">
+          {isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : (
+            <Check className="h-4 w-4 text-primary" />
+          )}
+        </div>
+      );
+    },
+  },
   {
     accessorKey: 'method',
     header: ({ column }) => (
