@@ -32,6 +32,9 @@ func NewManager() (*Manager, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate CA: %w", err)
 		}
+		if err := m.loadCA(); err != nil {
+			return nil, fmt.Errorf("failed to load generated CA: %w", err)
+		}
 		certPath := MustGetCACertPath()
 		keyPath := MustGetCAKeyPath()
 		fmt.Printf("New CA certificate saved to %s and key to %s\n", certPath, keyPath)
@@ -52,9 +55,7 @@ func MustGetCAKeyPath() string {
 }
 
 func (m *Manager) generateCA() error {
-	generateToFile(MustGetCACertPath(), MustGetCAKeyPath(), IssuerName, OrgName, NotAfter)
-
-	return nil
+	return generateToFile(MustGetCACertPath(), MustGetCAKeyPath(), IssuerName, OrgName, NotAfter)
 }
 
 func (m *Manager) loadCA() error {

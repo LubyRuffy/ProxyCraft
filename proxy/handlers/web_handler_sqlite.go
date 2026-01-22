@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS traffic_entries (
 	is_sse INTEGER,
 	is_sse_completed INTEGER,
 	is_https INTEGER,
+	is_timeout INTEGER,
 	process_name TEXT,
 	process_icon TEXT,
 	request_body BLOB,
@@ -70,6 +71,43 @@ func (h *WebHandler) initSQLite(dbPath string) error {
 		_ = db.Close()
 		return err
 	}
+	rows, err := db.Query("PRAGMA table_info(traffic_entries);")
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	hasTimeoutColumn := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &primaryKey); err != nil {
+			_ = rows.Close()
+			_ = db.Close()
+			return err
+		}
+		if name == "is_timeout" {
+			hasTimeoutColumn = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		_ = db.Close()
+		return err
+	}
+	_ = rows.Close()
+	if !hasTimeoutColumn {
+		if _, err := db.Exec("ALTER TABLE traffic_entries ADD COLUMN is_timeout INTEGER;"); err != nil {
+			_ = db.Close()
+			return err
+		}
+	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_traffic_entries_id ON traffic_entries(id);"); err != nil {
 		_ = db.Close()
 		return err
@@ -93,8 +131,8 @@ func (h *WebHandler) insertEntry(entry *TrafficEntry) (string, error) {
 	result, err := h.db.Exec(
 		`INSERT INTO traffic_entries (
 			start_time, host, host_with_schema, method, schema, protocol, url, path,
-			is_sse, is_sse_completed, is_https, process_name, process_icon, request_body, request_headers
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+			is_sse, is_sse_completed, is_https, is_timeout, process_name, process_icon, request_body, request_headers
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		toMillis(entry.StartTime),
 		emptyToNil(entry.Host),
 		emptyToNil(entry.HostWithSchema),
@@ -106,6 +144,7 @@ func (h *WebHandler) insertEntry(entry *TrafficEntry) (string, error) {
 		boolToInt(entry.IsSSE),
 		boolToInt(entry.IsSSECompleted),
 		boolToInt(entry.IsHTTPS),
+		boolToInt(entry.IsTimeout),
 		emptyToNil(entry.ProcessName),
 		emptyToNil(entry.ProcessIcon),
 		emptyBytesToNil(entry.RequestBody),
@@ -143,6 +182,7 @@ func (h *WebHandler) updateResponse(entry *TrafficEntry) error {
 			is_sse = ?,
 			is_sse_completed = ?,
 			is_https = ?,
+			is_timeout = ?,
 			response_headers = ?,
 			response_body = ?
 		WHERE id = ?`,
@@ -154,6 +194,7 @@ func (h *WebHandler) updateResponse(entry *TrafficEntry) error {
 		boolToInt(entry.IsSSE),
 		boolToInt(entry.IsSSECompleted),
 		boolToInt(entry.IsHTTPS),
+		boolToInt(entry.IsTimeout),
 		emptyBytesToNil(responseHeaders),
 		emptyBytesToNil(entry.ResponseBody),
 		entry.ID,
@@ -167,10 +208,11 @@ func (h *WebHandler) updateError(entry *TrafficEntry) error {
 	}
 
 	_, err := h.db.Exec(
-		`UPDATE traffic_entries SET end_time = ?, duration = ?, error = ? WHERE id = ?`,
+		`UPDATE traffic_entries SET end_time = ?, duration = ?, error = ?, is_timeout = ? WHERE id = ?`,
 		toNullableMillis(entry.EndTime),
 		entry.Duration,
 		emptyToNil(entry.Error),
+		boolToInt(entry.IsTimeout),
 		entry.ID,
 	)
 	return err
@@ -188,7 +230,8 @@ func (h *WebHandler) updateSSE(entry *TrafficEntry) error {
 			content_type = ?,
 			content_size = ?,
 			response_body = ?,
-			is_sse_completed = ?
+			is_sse_completed = ?,
+			is_timeout = ?
 		WHERE id = ?`,
 		toNullableMillis(entry.EndTime),
 		entry.Duration,
@@ -196,6 +239,7 @@ func (h *WebHandler) updateSSE(entry *TrafficEntry) error {
 		entry.ContentSize,
 		emptyBytesToNil(entry.ResponseBody),
 		boolToInt(entry.IsSSECompleted),
+		boolToInt(entry.IsTimeout),
 		entry.ID,
 	)
 	return err
@@ -208,7 +252,7 @@ func (h *WebHandler) loadEntries(limit int) ([]*TrafficEntry, error) {
 
 	rows, err := h.db.Query(
 		`SELECT id, start_time, end_time, duration, host, host_with_schema, method, schema, protocol, url, path,
-			status_code, content_type, content_size, is_sse, is_sse_completed, is_https, process_name, process_icon, error
+			status_code, content_type, content_size, is_sse, is_sse_completed, is_https, is_timeout, process_name, process_icon, error
 		FROM traffic_entries ORDER BY id DESC LIMIT ?`,
 		limit,
 	)
@@ -253,7 +297,7 @@ func (h *WebHandler) loadEntriesAfterID(offsetID string) ([]*TrafficEntry, error
 
 	rows, err := h.db.Query(
 		`SELECT id, start_time, end_time, duration, host, host_with_schema, method, schema, protocol, url, path,
-			status_code, content_type, content_size, is_sse, is_sse_completed, is_https, process_name, process_icon, error
+			status_code, content_type, content_size, is_sse, is_sse_completed, is_https, is_timeout, process_name, process_icon, error
 		FROM traffic_entries WHERE id > ? ORDER BY id ASC`,
 		offsetValue,
 	)
@@ -284,37 +328,38 @@ func (h *WebHandler) loadEntry(id string) (*TrafficEntry, error) {
 
 	row := h.db.QueryRow(
 		`SELECT id, start_time, end_time, duration, host, host_with_schema, method, schema, protocol, url, path,
-			status_code, content_type, content_size, is_sse, is_sse_completed, is_https, process_name, process_icon,
+			status_code, content_type, content_size, is_sse, is_sse_completed, is_https, is_timeout, process_name, process_icon,
 			request_body, response_body, request_headers, response_headers, error
 		FROM traffic_entries WHERE id = ?`,
 		id,
 	)
 
 	var (
-		entryID           int64
-		startTime         int64
-		endTime           sql.NullInt64
-		duration          sql.NullInt64
-		host              sql.NullString
-		hostWithSchema    sql.NullString
-		method            sql.NullString
-		schema            sql.NullString
-		protocol          sql.NullString
-		url               sql.NullString
-		path              sql.NullString
-		statusCode        sql.NullInt64
-		contentType       sql.NullString
-		contentSize       sql.NullInt64
-		isSSE             sql.NullInt64
-		isSSECompleted    sql.NullInt64
-		isHTTPS           sql.NullInt64
-		processName       sql.NullString
-		processIcon       sql.NullString
-		requestBody       []byte
-		responseBody      []byte
-		requestHeadersRaw []byte
+		entryID            int64
+		startTime          int64
+		endTime            sql.NullInt64
+		duration           sql.NullInt64
+		host               sql.NullString
+		hostWithSchema     sql.NullString
+		method             sql.NullString
+		schema             sql.NullString
+		protocol           sql.NullString
+		url                sql.NullString
+		path               sql.NullString
+		statusCode         sql.NullInt64
+		contentType        sql.NullString
+		contentSize        sql.NullInt64
+		isSSE              sql.NullInt64
+		isSSECompleted     sql.NullInt64
+		isHTTPS            sql.NullInt64
+		isTimeout          sql.NullInt64
+		processName        sql.NullString
+		processIcon        sql.NullString
+		requestBody        []byte
+		responseBody       []byte
+		requestHeadersRaw  []byte
 		responseHeadersRaw []byte
-		errorMsg          sql.NullString
+		errorMsg           sql.NullString
 	)
 
 	if err := row.Scan(
@@ -335,6 +380,7 @@ func (h *WebHandler) loadEntry(id string) (*TrafficEntry, error) {
 		&isSSE,
 		&isSSECompleted,
 		&isHTTPS,
+		&isTimeout,
 		&processName,
 		&processIcon,
 		&requestBody,
@@ -367,6 +413,7 @@ func (h *WebHandler) loadEntry(id string) (*TrafficEntry, error) {
 		isSSE,
 		isSSECompleted,
 		isHTTPS,
+		isTimeout,
 		processName,
 		processIcon,
 		errorMsg,
@@ -447,6 +494,7 @@ func scanEntryRow(rows *sql.Rows) (*TrafficEntry, error) {
 		isSSE          sql.NullInt64
 		isSSECompleted sql.NullInt64
 		isHTTPS        sql.NullInt64
+		isTimeout      sql.NullInt64
 		processName    sql.NullString
 		processIcon    sql.NullString
 		errorMsg       sql.NullString
@@ -470,6 +518,7 @@ func scanEntryRow(rows *sql.Rows) (*TrafficEntry, error) {
 		&isSSE,
 		&isSSECompleted,
 		&isHTTPS,
+		&isTimeout,
 		&processName,
 		&processIcon,
 		&errorMsg,
@@ -495,6 +544,7 @@ func scanEntryRow(rows *sql.Rows) (*TrafficEntry, error) {
 		isSSE,
 		isSSECompleted,
 		isHTTPS,
+		isTimeout,
 		processName,
 		processIcon,
 		errorMsg,
@@ -519,6 +569,7 @@ func buildEntryFromRow(
 	isSSE sql.NullInt64,
 	isSSECompleted sql.NullInt64,
 	isHTTPS sql.NullInt64,
+	isTimeout sql.NullInt64,
 	processName sql.NullString,
 	processIcon sql.NullString,
 	errorMsg sql.NullString,
@@ -539,6 +590,7 @@ func buildEntryFromRow(
 		IsSSE:          isSSE.Int64 == 1,
 		IsSSECompleted: isSSECompleted.Int64 == 1,
 		IsHTTPS:        isHTTPS.Int64 == 1,
+		IsTimeout:      isTimeout.Int64 == 1,
 		ProcessName:    processName.String,
 		ProcessIcon:    processIcon.String,
 		Error:          errorMsg.String,

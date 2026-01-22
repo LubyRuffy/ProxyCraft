@@ -327,10 +327,15 @@ func (ws *WebSocketServer) formatRequestDetails(entry *handlers.TrafficEntry) ma
 		body = string(entry.RequestBody)
 	}
 
-	return map[string]interface{}{
+	details := map[string]interface{}{
 		"headers": headers,
 		"body":    body,
 	}
+	if llm := ExtractLLM(entry, true, false); llm != nil {
+		details["llm"] = llm
+	}
+
+	return details
 }
 
 // formatResponseDetails 格式化响应详情
@@ -382,10 +387,15 @@ func (ws *WebSocketServer) formatResponseDetails(entry *handlers.TrafficEntry) m
 		body = string(entry.ResponseBody)
 	}
 
-	return map[string]interface{}{
+	details := map[string]interface{}{
 		"headers": headers,
 		"body":    body,
 	}
+	if llm := ExtractLLM(entry, false, true); llm != nil {
+		details["llm"] = llm
+	}
+
+	return details
 }
 
 // BroadcastNewEntry 广播新的流量条目给所有客户端

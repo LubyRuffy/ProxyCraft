@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -85,6 +87,85 @@ func TestHTTPSHandler(t *testing.T) {
 	assert.NoError(t, err)
 	resp.Body.Close()
 	assert.Contains(t, string(body), "Hello from HTTPS server")
+}
+
+func TestHTTPSMITMSystemTrust(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("system trust verification requires macOS")
+	}
+	if os.Getenv("PROXYCRAFT_TRUST_TEST") != "1" {
+		t.Skip("set PROXYCRAFT_TRUST_TEST=1 to run this test")
+	}
+
+	certMgr, err := certs.NewManager()
+	require.NoError(t, err)
+
+	if err := certs.VerifySystemTrust(certMgr); err != nil {
+		require.NoError(t, err)
+	}
+
+	serverCert, serverKey, err := certMgr.GenerateServerCert("localhost")
+	require.NoError(t, err)
+
+	tlsCert := tls.Certificate{
+		Certificate: [][]byte{serverCert.Raw},
+		PrivateKey:  serverKey,
+		Leaf:        serverCert,
+	}
+
+	backendListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	backendAddr := backendListener.Addr().String()
+	_, backendPort, err := net.SplitHostPort(backendAddr)
+	require.NoError(t, err)
+
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("mitm-ok"))
+	}))
+	backend.Listener = backendListener
+	backend.TLS = &tls.Config{Certificates: []tls.Certificate{tlsCert}}
+	backend.StartTLS()
+	defer backend.Close()
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	proxyAddr := proxyListener.Addr().String()
+
+	server := NewServer(
+		proxyAddr,
+		certMgr,
+		false,
+		harlogger.NewLogger("", "ProxyCraft", "0.1.0"),
+		nil,
+		false,
+	)
+	httpServer := server.buildHTTPServer()
+
+	go func() {
+		_ = httpServer.Serve(proxyListener)
+	}()
+	defer func() {
+		_ = httpServer.Close()
+	}()
+
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	require.NoError(t, err)
+
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   5 * time.Second,
+	}
+
+	targetURL := "https://localhost:" + backendPort + "/"
+	resp, err := client.Get(targetURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "mitm-ok", string(body))
 }
 
 type notHijackableResponseWriter struct {

@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,13 @@ const (
 // mustGetCertDir returns the directory where certificates are stored (~/.proxycraft).
 // It creates the directory if it doesn't exist.
 func mustGetCertDir() string {
+	if override := strings.TrimSpace(os.Getenv("PROXYCRAFT_CERT_DIR")); override != "" {
+		certDir := filepath.Clean(override)
+		if err := os.MkdirAll(certDir, 0755); err != nil {
+			log.Fatalf("could not create cert directory %s: %v", certDir, err)
+		}
+		return certDir
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatalf("could not get user home directory: %v", err)

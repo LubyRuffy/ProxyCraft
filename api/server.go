@@ -349,10 +349,14 @@ func (s *Server) getRequestDetails(c *gin.Context) {
 	}
 
 	log.Printf("已获取请求详情，ID: %s，内容大小: %d bytes", id, len(entry.RequestBody))
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"headers": headers,
 		"body":    body,
-	})
+	}
+	if llm := ExtractLLM(entry, true, false); llm != nil {
+		response["llm"] = llm
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // getResponseDetails 获取响应详情
@@ -416,10 +420,14 @@ func (s *Server) getResponseDetails(c *gin.Context) {
 	}
 
 	log.Printf("已获取响应详情，ID: %s，内容大小: %d bytes", id, len(entry.ResponseBody))
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"headers": headers,
 		"body":    body,
-	})
+	}
+	if llm := ExtractLLM(entry, false, true); llm != nil {
+		response["llm"] = llm
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // serveUI 提供前端静态文件

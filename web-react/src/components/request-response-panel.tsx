@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { HttpBodyPanel, type BodyConfig, type BodyFormat } from '@/components/http-body-panel';
+import { getTrafficTags } from '@/lib/traffic-tags';
 import { cn } from '@/lib/utils';
 import { HttpMessage, TrafficDetail, TrafficEntry } from '@/types/traffic';
 
@@ -15,10 +21,8 @@ const DISPLAY_OPTIONS = [
 ] as const;
 
 const VIEW_TABS = [
-  { key: 'pretty', label: 'Pretty' },
-  { key: 'raw', label: 'Raw' },
-  { key: 'hex', label: 'Hex' },
-  { key: 'render', label: 'Render' },
+  { key: 'http', label: 'HTTP' },
+  { key: 'ai', label: 'AI' },
 ] as const;
 
 type DisplayMode = (typeof DISPLAY_OPTIONS)[number]['key'];
@@ -155,18 +159,75 @@ const buildCurlCommand = (entry?: TrafficEntry | null, detail?: TrafficDetail) =
   return command;
 };
 
+const formatJsonValue = (value?: unknown) => {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value);
+  }
+};
+
+const MarkdownBlock = ({ value }: { value: string }) => (
+  <div className="text-xs/relaxed text-foreground">
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+        ul: ({ children }) => <ul className="mb-3 list-disc pl-5 last:mb-0">{children}</ul>,
+        ol: ({ children }) => <ol className="mb-3 list-decimal pl-5 last:mb-0">{children}</ol>,
+        li: ({ children }) => <li className="mb-1 last:mb-0">{children}</li>,
+        a: ({ children, href }) => (
+          <a className="text-primary underline underline-offset-4" href={href} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        ),
+        code: ({ className, children }) =>
+          className ? (
+            <code className="font-mono text-[11px]">{children}</code>
+          ) : (
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{children}</code>
+          ),
+        pre: ({ children }) => (
+          <pre className="mb-3 overflow-auto rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-xs leading-relaxed text-foreground">
+            {children}
+          </pre>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-2 border-border/60 pl-3 text-muted-foreground">{children}</blockquote>
+        ),
+      }}
+    >
+      {value}
+    </ReactMarkdown>
+  </div>
+);
+
 export function RequestResponsePanel({ entry, detail, loading }: RequestResponsePanelProps) {
   const [mode, setMode] = useState<DisplayMode>('split');
   const [copyState, setCopyState] = useState<CopyState>('idle');
-  const [requestTab, setRequestTab] = useState<ViewTab>('pretty');
-  const [responseTab, setResponseTab] = useState<ViewTab>('pretty');
+  const [requestTab, setRequestTab] = useState<ViewTab>('http');
+  const [responseTab, setResponseTab] = useState<ViewTab>('http');
   const entryId = entry?.id;
+  const hasAiTag = useMemo(() => getTrafficTags(entry).includes('ai'), [entry]);
 
   useEffect(() => {
     setCopyState(entryId ? 'idle' : 'idle');
-    setRequestTab('pretty');
-    setResponseTab('pretty');
+    setRequestTab('http');
+    setResponseTab('http');
   }, [entryId]);
+
+  useEffect(() => {
+    if (!hasAiTag) {
+      if (requestTab === 'ai') {
+        setRequestTab('http');
+      }
+      if (responseTab === 'ai') {
+        setResponseTab('http');
+      }
+    }
+  }, [hasAiTag, requestTab, responseTab]);
 
   const handleCopy = useCallback(async () => {
     const command = buildCurlCommand(entry, detail);
@@ -202,7 +263,171 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
 
     const requestHeaders = formatHeaderEntries(detail?.request);
     const responseHeaders = formatHeaderEntries(detail?.response);
+    const llmRequest = detail?.request?.llm?.request;
+    const llmResponse = detail?.response?.llm?.response;
+    const llmMeta = {
+      provider: detail?.request?.llm?.provider ?? detail?.response?.llm?.provider,
+      model: detail?.request?.llm?.model ?? detail?.response?.llm?.model,
+      streaming: detail?.request?.llm?.streaming ?? detail?.response?.llm?.streaming,
+    };
+    const hasLLMMeta = Boolean(llmMeta.provider || llmMeta.model || llmMeta.streaming);
+    const hasLLMRequest = Boolean(llmRequest?.prompt || llmRequest?.toolCalls || llmRequest?.tools);
+    const hasLLMResponse = Boolean(llmResponse?.content || llmResponse?.toolCalls || llmResponse?.reasoning);
 
+    const renderLLMBadges = () =>
+      hasLLMMeta ? (
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          {llmMeta.provider ? <Badge variant="outline">Provider: {llmMeta.provider}</Badge> : null}
+          {llmMeta.model ? <Badge variant="outline">Model: {llmMeta.model}</Badge> : null}
+          {llmMeta.streaming ? <Badge variant="warning">SSE Streaming</Badge> : null}
+        </div>
+      ) : null;
+
+    const toolLabelMap: Record<string, string> = {
+      web_search: 'Web Search',
+      websearch: 'Web Search',
+      file_search: 'File Search',
+      code_interpreter: 'Code Interpreter',
+      browser: 'Browser',
+      vision: 'Vision',
+    };
+
+    const getToolLabel = (tool: unknown) => {
+      if (!tool) return 'Unknown Tool';
+      if (typeof tool === 'string') return tool;
+      if (typeof tool === 'object') {
+        const typedTool = tool as { type?: string; name?: string; function?: { name?: string } };
+        const rawType = typeof typedTool.type === 'string' ? typedTool.type : '';
+        const normalized = rawType.toLowerCase();
+        if (toolLabelMap[normalized]) return toolLabelMap[normalized];
+        if (normalized === 'function' && typeof typedTool.name === 'string') return typedTool.name;
+        if (normalized === 'function' && typeof typedTool.function?.name === 'string') return typedTool.function.name;
+        if (typeof typedTool.name === 'string') return typedTool.name;
+        if (rawType) return rawType;
+      }
+      return 'Unknown Tool';
+    };
+
+    const getToolsList = (tools?: unknown) => {
+      if (!tools) return [] as unknown[];
+      if (Array.isArray(tools)) return tools;
+      if (typeof tools === 'object') return Object.values(tools as Record<string, unknown>);
+      return [tools];
+    };
+
+    const getToolKey = (tool: unknown) => {
+      if (typeof tool === 'string') return `tool-${tool}`;
+      if (typeof tool === 'object' && tool) {
+        const typedTool = tool as { type?: string; name?: string; function?: { name?: string } };
+        const key = typedTool.name || typedTool.function?.name || typedTool.type;
+        if (key) return `tool-${key}`;
+      }
+      return `tool-${getToolLabel(tool)}`;
+    };
+
+    const renderJsonPanel = (value?: unknown) => (
+      <pre className="max-h-64 overflow-auto rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-xs leading-relaxed text-foreground">
+        {formatJsonValue(value)}
+      </pre>
+    );
+
+    const renderLLMRequest = () => {
+      if (!hasLLMRequest && !hasLLMMeta) {
+        return (
+          <div className="flex min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+            暂无 AI 请求解析
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex flex-col gap-2">
+          {renderLLMBadges()}
+          {llmRequest?.prompt ? (
+            <Card size="sm">
+              <CardHeader className="border-b border-border/60">
+                <CardTitle className="text-xs font-semibold text-muted-foreground">Prompt</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <MarkdownBlock value={llmRequest.prompt} />
+              </CardContent>
+            </Card>
+          ) : null}
+          {llmRequest?.tools ? (
+            <div className="rounded-md border border-border/60 bg-muted/30 p-2">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Tools</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {getToolsList(llmRequest.tools).length ? (
+                  getToolsList(llmRequest.tools).map((tool) => (
+                    <Badge key={getToolKey(tool)} variant="outline">
+                      {getToolLabel(tool)}
+                    </Badge>
+                  ))
+                ) : (
+                  <span className="text-xs text-muted-foreground">No tools</span>
+                )}
+              </div>
+            </div>
+          ) : null}
+          {llmRequest?.toolCalls ? (
+            <Accordion type="multiple">
+              <AccordionItem value="llm-request-tool-calls">
+                <AccordionTrigger>Tool Calls</AccordionTrigger>
+                <AccordionContent>{renderJsonPanel(llmRequest.toolCalls)}</AccordionContent>
+              </AccordionItem>
+            </Accordion>
+          ) : null}
+        </div>
+      );
+    };
+
+    const renderLLMResponse = () => {
+      if (!hasLLMResponse && !hasLLMMeta) {
+        return (
+          <div className="flex min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+            暂无 AI 响应解析
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex flex-col gap-2">
+          {renderLLMBadges()}
+          {llmResponse?.content ? (
+            <Card size="sm">
+              <CardHeader className="border-b border-border/60">
+                <CardTitle className="text-xs font-semibold text-muted-foreground">Content</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <MarkdownBlock value={llmResponse.content} />
+              </CardContent>
+            </Card>
+          ) : null}
+          {llmResponse?.reasoning || llmResponse?.toolCalls ? (
+            <Accordion type="multiple">
+              {llmResponse?.reasoning ? (
+                <AccordionItem value="llm-response-reasoning">
+                  <AccordionTrigger>思考过程</AccordionTrigger>
+                  <AccordionContent>
+                    <div className="rounded-md border border-border/60 bg-muted/40 p-2">
+                      <MarkdownBlock value={llmResponse.reasoning} />
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              ) : null}
+              {llmResponse?.toolCalls ? (
+                <AccordionItem value="llm-response-tool-calls">
+                  <AccordionTrigger>Tool Calls</AccordionTrigger>
+                  <AccordionContent>{renderJsonPanel(llmResponse.toolCalls)}</AccordionContent>
+                </AccordionItem>
+              ) : null}
+            </Accordion>
+          ) : null}
+        </div>
+      );
+    };
+
+    const tabItems = hasAiTag ? VIEW_TABS : VIEW_TABS.filter((tab) => tab.key !== 'ai');
     const renderTabRow = (activeTab: ViewTab, onChange: (tab: ViewTab) => void) => (
       <ToggleGroup
         type="single"
@@ -211,7 +436,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
           if (val) onChange(val as ViewTab);
         }}
       >
-        {VIEW_TABS.map((tab) => (
+        {tabItems.map((tab) => (
           <ToggleGroupItem
             key={tab.key}
             value={tab.key}
@@ -231,7 +456,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
     const requestBodyConfig = buildEditorConfig(detail?.request?.body, detail?.request);
     const responseBodyConfig = buildEditorConfig(detail?.response?.body, detail?.response);
 
-    const renderRequestPretty = () => (
+    const renderRequest = () => (
       <div className="flex h-full min-h-0 flex-col gap-2">
         <div className="shrink-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">请求头</p>
@@ -253,7 +478,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
       </div>
     );
 
-    const renderResponsePretty = () => (
+    const renderResponse = () => (
       <div className="flex h-full min-h-0 flex-col gap-2">
         <div className="shrink-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">响应头</p>
@@ -282,7 +507,11 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
           {renderTabRow(requestTab, setRequestTab)}
         </header>
         <div className="flex-1 min-h-0 overflow-auto p-2">
-          {requestTab === 'pretty' ? renderRequestPretty() : renderPlaceholder('请求')}
+          {requestTab === 'http'
+            ? renderRequest()
+            : requestTab === 'ai'
+              ? renderLLMRequest()
+              : renderPlaceholder('请求')}
         </div>
       </section>
     );
@@ -294,7 +523,11 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
           {renderTabRow(responseTab, setResponseTab)}
         </header>
         <div className="flex-1 min-h-0 overflow-auto p-2">
-          {responseTab === 'pretty' ? renderResponsePretty() : renderPlaceholder('响应')}
+          {responseTab === 'http'
+            ? renderResponse()
+            : responseTab === 'ai'
+              ? renderLLMResponse()
+              : renderPlaceholder('响应')}
         </div>
       </section>
     );
@@ -322,7 +555,7 @@ export function RequestResponsePanel({ entry, detail, loading }: RequestResponse
         {showResponse ? responseSection : null}
       </div>
     );
-  }, [detail?.request, detail?.response, entry, hasRequest, hasResponse, mode, requestTab, responseTab]);
+  }, [detail?.request, detail?.response, entry, hasAiTag, hasRequest, hasResponse, mode, requestTab, responseTab]);
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col overflow-x-hidden">

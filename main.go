@@ -64,7 +64,23 @@ func main() {
 			log.Fatalf("Error loading custom CA certificate and key: %v", err)
 		}
 		log.Printf("Successfully loaded custom CA certificate and key")
+
+		if cfg.VerifyCATrust {
+			if err := certs.VerifySystemTrust(certManager); err != nil {
+				log.Fatalf("System trust verification failed: %v", err)
+			}
+			fmt.Println("System trust verification succeeded.")
+			return
+		}
 	} else {
+		if cfg.VerifyCATrust {
+			if err := certs.VerifySystemTrust(certManager); err != nil {
+				log.Fatalf("System trust verification failed: %v", err)
+			}
+			fmt.Println("System trust verification succeeded.")
+			return
+		}
+
 		if cfg.ForceReinstallCA {
 			log.Printf("Force reinstalling CA certificate in system trust store...")
 			err = certManager.InstallCertsForce()
@@ -78,13 +94,14 @@ func main() {
 		} else {
 			// Automatically check if CA certificate is installed and install if needed
 			log.Printf("Checking if CA certificate is installed in system trust store...")
-			if !certs.IsInstalled() {
+			if err := certs.VerifySystemTrust(certManager); err != nil {
 				log.Printf("CA certificate not installed. Attempting to install...")
 				err = certManager.InstallCerts()
 				if err != nil {
 					log.Printf("Warning: Failed to automatically install CA certificate: %v", err)
 					log.Printf("Please manually install the CA certificate using the -install-ca flag")
 					log.Printf("Or export the certificate with -export-ca and install it manually")
+					log.Printf("You can also run -verify-ca to check installation status without prompts")
 				} else {
 					log.Printf("CA certificate installed successfully")
 				}

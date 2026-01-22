@@ -6,6 +6,8 @@ import { yaml } from '@codemirror/lang-yaml';
 import { defaultHighlightStyle, foldGutter, foldKeymap, syntaxHighlighting } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
+import { useCallback, useEffect, useRef, useState } from 'react';
+
 import CodeMirror from '@uiw/react-codemirror';
 
 import { cn } from '@/lib/utils';
@@ -151,9 +153,83 @@ export function HttpBodyPanel({
   config: BodyConfig;
   className?: string;
 }) {
+  const [copyState, setCopyState] = useState<'idle' | 'success' | 'error'>('idle');
+  const resetTimer = useRef<number | null>(null);
+  const hasBody = Boolean(config.value);
+
+  const clearResetTimer = useCallback(() => {
+    if (resetTimer.current !== null) {
+      window.clearTimeout(resetTimer.current);
+      resetTimer.current = null;
+    }
+  }, []);
+
+  const scheduleReset = () => {
+    clearResetTimer();
+    resetTimer.current = window.setTimeout(() => {
+      setCopyState('idle');
+      resetTimer.current = null;
+    }, 1400);
+  };
+
+  const handleCopy = async () => {
+    if (!hasBody) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(config.value);
+      setCopyState('success');
+    } catch (error) {
+      setCopyState('error');
+    }
+
+    scheduleReset();
+  };
+
+  useEffect(() => {
+    if (copyState !== 'idle') {
+      return undefined;
+    }
+
+    clearResetTimer();
+    return () => {
+      clearResetTimer();
+    };
+  }, [clearResetTimer, copyState]);
+
   return (
     <div className={cn('flex min-h-0 flex-col', className)}>
-      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{title}</p>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{title}</p>
+        <div className="flex items-center gap-2">
+          {copyState === 'success' ? (
+            <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-primary">Copied</span>
+          ) : null}
+          {copyState === 'error' ? (
+            <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-destructive">Failed</span>
+          ) : null}
+          <button
+            type="button"
+            onClick={handleCopy}
+            aria-label="Copy body"
+            disabled={!hasBody}
+            title={hasBody ? 'Copy body' : 'No body to copy'}
+            className={cn(
+              'inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition',
+              'hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'disabled:cursor-not-allowed disabled:opacity-40'
+            )}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" className="h-3.5 w-3.5">
+              <path
+                fill="currentColor"
+                d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
       <BodyViewer config={config} className="flex-1 min-h-0" />
     </div>
   );

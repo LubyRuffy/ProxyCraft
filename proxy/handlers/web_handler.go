@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -42,6 +43,7 @@ type TrafficEntry struct {
 	IsSSE           bool        `json:"isSSE"`            // 是否为SSE请求
 	IsSSECompleted  bool        `json:"isSSECompleted"`   // SSE请求是否已完成
 	IsHTTPS         bool        `json:"isHTTPS"`          // 是否为HTTPS请求
+	IsTimeout       bool        `json:"isTimeout"`        // 是否为超时错误
 	ProcessName     string      `json:"processName"`      // 请求进程名称
 	ProcessIcon     string      `json:"processIcon"`      // 请求进程图标
 	RequestBody     []byte      `json:"-"`                // 请求体
@@ -63,8 +65,8 @@ type WebHandler struct {
 	newEntryCallback NewEntryCallback         // 新条目回调函数
 	callbackMutex    sync.RWMutex             // 保护回调函数的互斥锁
 	maxEntries       int                      // 最大条目数
-	db              *sql.DB                   // SQLite数据库连接
-	dbPath          string                    // SQLite数据库路径
+	db               *sql.DB                  // SQLite数据库连接
+	dbPath           string                   // SQLite数据库路径
 }
 
 // NewWebHandler 创建一个新的WebHandler
@@ -436,6 +438,7 @@ func (h *WebHandler) snapshotEntriesLocked(startIndex int, endIndex int) []*Traf
 			IsSSE:          srcEntry.IsSSE,
 			IsSSECompleted: srcEntry.IsSSECompleted,
 			IsHTTPS:        srcEntry.IsHTTPS,
+			IsTimeout:      srcEntry.IsTimeout,
 			ProcessName:    srcEntry.ProcessName,
 			ProcessIcon:    srcEntry.ProcessIcon,
 			Error:          srcEntry.Error,
@@ -736,6 +739,7 @@ func (h *WebHandler) OnError(err error, reqCtx *proxy.RequestContext) {
 
 	// 准备更新的数据
 	errorMsg := err.Error()
+	isTimeout := isTimeoutError(err)
 	endTime := time.Now()
 	duration := endTime.Sub(entry.StartTime).Milliseconds()
 
@@ -754,6 +758,9 @@ func (h *WebHandler) OnError(err error, reqCtx *proxy.RequestContext) {
 
 	// 更新错误信息
 	entry.Error = errorMsg
+	if isTimeout {
+		entry.IsTimeout = true
+	}
 	entry.EndTime = endTime
 	entry.Duration = duration
 
@@ -769,6 +776,21 @@ func (h *WebHandler) OnError(err error, reqCtx *proxy.RequestContext) {
 
 	// 通知有新的条目更新
 	go h.notifyNewEntry(entry)
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded")
 }
 
 // OnTunnelEstablished 实现 EventHandler 接口
@@ -853,7 +875,8 @@ func (h *WebHandler) OnSSE(event string, ctx *proxy.ResponseContext) {
 	// 准备更新的数据
 	endTime := time.Now()
 	duration := endTime.Sub(entry.StartTime).Milliseconds()
-	eventBytes := []byte(event + "\n")
+	eventText := strings.TrimRight(event, "\r\n")
+	eventBytes := []byte(eventText + "\n\n")
 
 	// 获取写锁并更新
 	h.entryMutex.Lock()

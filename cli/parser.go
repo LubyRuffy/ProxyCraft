@@ -21,6 +21,7 @@ type Config struct {
 	UseCAKeyPath     string // Use custom root CA private key from KEY_PATH
 	InstallCerts     bool   // Install CA certificate to system trust store
 	ForceReinstallCA bool   // Force reinstall CA certificate to system trust store
+	VerifyCATrust    bool   // Verify system trust for the CA certificate and exit
 	ShowHelp         bool   // Show this help message and exit
 	UpstreamProxy    string // Upstream proxy URL (e.g., "http://proxy.example.com:8080")
 	DumpTraffic      bool   // Enable dumping traffic content to console
@@ -47,6 +48,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.UseCAKeyPath, "use-key", "", "Use custom root CA private key from KEY_PATH")
 	flag.BoolVar(&cfg.InstallCerts, "install-ca", false, "Install the CA certificate to system trust store and exit")
 	flag.BoolVar(&cfg.ForceReinstallCA, "force-reinstall-ca", false, "Force reinstall the CA certificate to system trust store")
+	flag.BoolVar(&cfg.VerifyCATrust, "verify-ca", false, "Verify system trust for the CA certificate and exit")
 	flag.StringVar(&cfg.UpstreamProxy, "upstream-proxy", "", "Upstream proxy URL (e.g., \"http://proxy.example.com:8080\")")
 	flag.BoolVar(&cfg.DumpTraffic, "dump", false, "Dump traffic content to console with headers (binary content will not be displayed)")
 	flag.StringVar(&cfg.Mode, "mode", "", "Running mode: empty for CLI mode, 'web' for Web UI mode")

@@ -18,6 +18,7 @@ const MOCK_ENTRIES: TrafficEntry[] = [
     isSSE: false,
     isSSECompleted: false,
     isHTTPS: true,
+    isTimeout: false,
   },
   {
     id: 'a0',
@@ -34,6 +35,7 @@ const MOCK_ENTRIES: TrafficEntry[] = [
     isSSE: false,
     isSSECompleted: false,
     isHTTPS: true,
+    isTimeout: false,
   },
   {
     id: '9f',
@@ -50,6 +52,7 @@ const MOCK_ENTRIES: TrafficEntry[] = [
     isSSE: true,
     isSSECompleted: false,
     isHTTPS: true,
+    isTimeout: false,
   },
 ];
 

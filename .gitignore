@@ -35,3 +35,4 @@ test_websocket_api
 test_v3
 .gitignore
 test_websocket_debug
+proxycraft.db*

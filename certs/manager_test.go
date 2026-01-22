@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,8 +35,8 @@ func TestNewManager(t *testing.T) {
 
 	// 清理
 	os.Remove(tmpFile)
-	os.Remove(caCertFile) // Clean up default CA files created by NewManager
-	os.Remove(caKeyFile)  // Clean up default CA key files created by NewManager
+	os.Remove(MustGetCACertPath()) // Clean up default CA files created by NewManager
+	os.Remove(MustGetCAKeyPath())  // Clean up default CA key files created by NewManager
 }
 
 func TestLoadCustomCA(t *testing.T) {
@@ -135,8 +136,8 @@ func TestGenerateServerCert(t *testing.T) {
 	assert.Contains(t, err.Error(), "CA certificate or key not loaded")
 
 	// 清理 NewManager 创建的默认 CA 文件
-	os.Remove(caCertFile)
-	os.Remove(caKeyFile)
+	os.Remove(MustGetCACertPath())
+	os.Remove(MustGetCAKeyPath())
 }
 
 func TestGetCertPaths(t *testing.T) {
@@ -147,34 +148,21 @@ func TestGetCertPaths(t *testing.T) {
 	assert.Contains(t, keyPath, caKeyFile)
 }
 
+func TestMustGetCertDir_EnvOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("PROXYCRAFT_CERT_DIR", tmpDir)
+
+	certPath := MustGetCACertPath()
+	assert.Equal(t, filepath.Join(tmpDir, caCertFile), certPath)
+
+	info, err := os.Stat(tmpDir)
+	assert.NoError(t, err)
+	assert.True(t, info.IsDir())
+}
+
 // Helper function to create dummy CA files for testing loadCA implicitly via NewManager
 func createDummyCAFiles(t *testing.T) (*rsa.PrivateKey, *x509.Certificate) {
-	privKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().Unix()), // Unique serial number
-		Subject: pkix.Name{
-			Organization: []string{"Dummy CA Org"},
-			CommonName:   "Dummy CA for Test",
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(0, 1, 0), // Valid for 1 month
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-	derBytes, _ := x509.CreateCertificate(rand.Reader, &template, &template, &privKey.PublicKey, privKey)
-	cert, _ := x509.ParseCertificate(derBytes)
-
-	certOut, _ := os.Create(caCertFile)
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	certOut.Close()
-
-	keyOut, _ := os.OpenFile(caKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	privBytes, _ := x509.MarshalPKCS8PrivateKey(privKey)
-	pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
-	keyOut.Close()
-
-	return privKey, cert
+	return createDummyCAFilesAtPaths(t, MustGetCACertPath(), MustGetCAKeyPath())
 }
 
 func TestNewManager_LoadExistingCA(t *testing.T) {
@@ -280,9 +268,9 @@ func TestExportCACert_Errors(t *testing.T) {
 	assert.Contains(t, err.Error(), "CA certificate not loaded or generated yet")
 
 	// 2. 测试文件创建失败的情况 (例如，目标路径是一个目录)
-	mgrLoaded, _ := NewManager() // Creates a valid CA
-	defer os.Remove(caCertFile)  // Clean up default CA
-	defer os.Remove(caKeyFile)   // Clean up default CA
+	mgrLoaded, _ := NewManager()         // Creates a valid CA
+	defer os.Remove(MustGetCACertPath()) // Clean up default CA
+	defer os.Remove(MustGetCAKeyPath())  // Clean up default CA
 
 	// 创建一个同名目录，使 ExportCACert 中的 os.Create 失败
 	targetDir := "test_export_dir.pem"
